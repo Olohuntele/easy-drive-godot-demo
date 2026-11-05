@@ -1,6 +1,7 @@
 extends SceneTree
 
 const Dynamics = preload("res://scripts/vehicle_dynamics.gd")
+const DrivingController = preload("res://scripts/driving_controller.gd")
 
 var failures: int = 0
 var assertions: int = 0
@@ -22,6 +23,13 @@ func _run_tests() -> void:
     _test_braking_while_turning()
     _test_steering_timestep_stability()
     _test_full_state_reset()
+    _test_autonomous_clear_road_arrival()
+    _test_large_overshoot_is_missed()
+    _test_manual_coast_down_is_not_autonomous_arrival()
+    _test_temporary_manual_override_disqualifies_autonomous_arrival()
+    _test_reset_restores_autonomous_mode()
+    _test_blocked_road_still_stops_safely()
+    _test_steering_test_control_still_turns()
 
     if failures == 0:
         print("VehicleDynamics tests passed: %d assertions." % assertions)
@@ -157,6 +165,137 @@ func _test_full_state_reset() -> void:
     _expect(is_equal_approx(dynamics.heading_rad, deg_to_rad(20.0)), "reset restores heading")
     _expect(is_equal_approx(dynamics.steering_rad, deg_to_rad(-5.0)), "reset restores steering")
     _expect(is_equal_approx(dynamics.actual_acceleration_mps2, 0.0), "reset clears actual acceleration")
+
+func _test_autonomous_clear_road_arrival() -> void:
+    var dynamics = Dynamics.new()
+    var controller = DrivingController.new()
+    controller.reset()
+    var status: String = "NOT YET ARRIVED"
+    for i in range(3000):
+        var decision: Dictionary = controller.request_clear_road_acceleration(
+            dynamics.position_z_m, dynamics.speed_mps, 100.0, 1.0 / 60.0, 0.0,
+            dynamics.max_acceleration, dynamics.max_braking, dynamics.max_speed
+        )
+        dynamics.step(decision.acceleration, 1.0 / 60.0)
+        status = controller.clear_road_arrival_status(
+            100.0, dynamics.position_z_m, dynamics.speed_mps, 0.0
+        )
+        if dynamics.speed_mps == 0.0:
+            break
+
+    _expect(dynamics.speed_mps <= 0.1, "autonomous clear-road controller stops within the speed tolerance")
+    _expect(absf(100.0 - dynamics.position_z_m) <= 1.0, "autonomous clear-road stop is within 1 m of target")
+    _expect(status == "ARRIVED", "controller reports ARRIVED only for the in-tolerance stop")
+
+func _test_large_overshoot_is_missed() -> void:
+    var controller = DrivingController.new()
+    controller.reset()
+    var status: String = controller.clear_road_arrival_status(100.0, 191.84, 0.0, 0.0)
+    _expect(status == "MISSED DESTINATION", "stopped vehicle at Z=191.84 is a missed destination")
+
+func _test_manual_coast_down_is_not_autonomous_arrival() -> void:
+    var dynamics = Dynamics.new()
+    var controller = DrivingController.new()
+    controller.auto_drive_enabled = false
+    var saw_arrived: bool = false
+    for i in range(3000):
+        var manual_input: float = 1.0 if dynamics.position_z_m < 90.0 else 0.0
+        var decision: Dictionary = controller.request_clear_road_acceleration(
+            dynamics.position_z_m, dynamics.speed_mps, 100.0, 1.0 / 60.0, manual_input,
+            dynamics.max_acceleration, dynamics.max_braking, dynamics.max_speed
+        )
+        dynamics.step(decision.acceleration, 1.0 / 60.0)
+        var status: String = controller.clear_road_arrival_status(
+            100.0, dynamics.position_z_m, dynamics.speed_mps, manual_input
+        )
+        saw_arrived = saw_arrived || status == "ARRIVED"
+        if dynamics.speed_mps == 0.0 && dynamics.position_z_m > 100.0:
+            break
+
+    _expect(not saw_arrived, "manual acceleration and coast-down never report autonomous arrival")
+    _expect(dynamics.position_z_m > 101.0, "manual coast-down demonstrates destination overshoot")
+    _expect(
+        controller.clear_road_arrival_status(100.0, dynamics.position_z_m, dynamics.speed_mps, 0.0)
+            == "MISSED DESTINATION",
+        "manual coast-down overshoot is reported as missed"
+    )
+
+func _test_temporary_manual_override_disqualifies_autonomous_arrival() -> void:
+    var dynamics = Dynamics.new()
+    var controller = DrivingController.new()
+    controller.reset()
+
+    for i in range(10):
+        var manual_decision: Dictionary = controller.request_clear_road_acceleration(
+            dynamics.position_z_m, dynamics.speed_mps, 100.0, 1.0 / 60.0, 1.0,
+            dynamics.max_acceleration, dynamics.max_braking, dynamics.max_speed
+        )
+        dynamics.step(manual_decision.acceleration, 1.0 / 60.0)
+
+    var status: String = "NOT YET ARRIVED"
+    for i in range(3000):
+        var autonomous_decision: Dictionary = controller.request_clear_road_acceleration(
+            dynamics.position_z_m, dynamics.speed_mps, 100.0, 1.0 / 60.0, 0.0,
+            dynamics.max_acceleration, dynamics.max_braking, dynamics.max_speed
+        )
+        dynamics.step(autonomous_decision.acceleration, 1.0 / 60.0)
+        status = controller.clear_road_arrival_status(
+            100.0, dynamics.position_z_m, dynamics.speed_mps, 0.0
+        )
+        if dynamics.speed_mps == 0.0:
+            break
+
+    _expect(status == "AUTONOMOUS ARRIVAL NOT CERTIFIED - MANUAL INPUT USED", "temporary W/S override cannot be certified as autonomous arrival")
+
+func _test_reset_restores_autonomous_mode() -> void:
+    var controller = DrivingController.new()
+    controller.auto_drive_enabled = false
+    controller.request_clear_road_acceleration(0.0, 0.0, 100.0, 1.0 / 60.0, 0.0, 3.5, 6.0, 10.0)
+    controller.reset()
+    _expect(controller.auto_drive_enabled, "reset restores autonomous control mode")
+    _expect(not controller.manual_intervention_seen, "reset clears the manual-intervention latch")
+
+    var dynamics = Dynamics.new()
+    var status: String = "NOT YET ARRIVED"
+    for i in range(3000):
+        var decision: Dictionary = controller.request_clear_road_acceleration(
+            dynamics.position_z_m, dynamics.speed_mps, 100.0, 1.0 / 60.0, 0.0,
+            dynamics.max_acceleration, dynamics.max_braking, dynamics.max_speed
+        )
+        dynamics.step(decision.acceleration, 1.0 / 60.0)
+        status = controller.clear_road_arrival_status(100.0, dynamics.position_z_m, dynamics.speed_mps, 0.0)
+        if dynamics.speed_mps == 0.0:
+            break
+    _expect(status == "ARRIVED", "autonomous destination arrival works after reset")
+
+func _test_blocked_road_still_stops_safely() -> void:
+    var dynamics = Dynamics.new()
+    var controller = DrivingController.new()
+    controller.reset()
+    for i in range(3000):
+        var decision: Dictionary = controller.request_blocked_road_acceleration(
+            dynamics.position_z_m, dynamics.speed_mps, 60.0, 4.0, 4.0, 1.0 / 60.0, 0.0,
+            dynamics.max_acceleration, dynamics.max_braking, dynamics.max_speed
+        )
+        dynamics.step(decision.acceleration, 1.0 / 60.0)
+        if dynamics.speed_mps == 0.0 && dynamics.position_z_m > 0.0:
+            break
+    var bumper_clearance: float = 60.0 - 4.0 / 2.0 - (dynamics.position_z_m + 4.0 / 2.0)
+    _expect(dynamics.speed_mps == 0.0, "blocked-road controller brings the vehicle to a stop")
+    _expect(bumper_clearance >= 2.0, "blocked-road stop retains at least 2 m bumper clearance")
+
+func _test_steering_test_control_still_turns() -> void:
+    var dynamics = Dynamics.new()
+    var controller = DrivingController.new()
+    controller.reset()
+    var decision: Dictionary = controller.request_clear_road_acceleration(
+        dynamics.position_z_m, dynamics.speed_mps, 100.0, 1.0 / 60.0, 0.0,
+        dynamics.max_acceleration, dynamics.max_braking, dynamics.max_speed
+    )
+    dynamics.reset(0.0, 2.0)
+    dynamics.step(decision.acceleration, 0.5, dynamics.steering_limit_rad)
+    _expect(dynamics.position_x_m > 0.0, "steering-test positive steering still turns toward +X")
+    _expect(dynamics.heading_rad > 0.0, "steering-test positive steering still changes heading")
 
 func _run_acceleration_for_two_seconds(timestep: float):
     var dynamics = Dynamics.new()

@@ -1,18 +1,19 @@
 extends Node3D
 
 const VehicleDynamics = preload("res://scripts/vehicle_dynamics.gd")
+const DrivingController = preload("res://scripts/driving_controller.gd")
 
 @export var ego_max_accel: float = 3.5
 @export var ego_max_brake: float = 6.0
 @export var ego_max_speed: float = 10.0
 
 var vehicle_dynamics = VehicleDynamics.new()
+var driving_controller = DrivingController.new()
 var lead_pos: float = 60.0
 var lead_speed: float = 0.0
 
 var target_b: float = 100.0
 var scenario_blocked_road: bool = true
-var auto_drive: bool = true
 var steering_test_mode: bool = false
 var key3_pressed_last_frame: bool = false
 var ego_length: float = 4.0
@@ -30,6 +31,7 @@ func _ready() -> void:
     reset_simulation()
 
 func reset_simulation() -> void:
+    driving_controller.reset()
     vehicle_dynamics.reset()
     if lead_car:
         lead_car.visible = scenario_blocked_road && not steering_test_mode
@@ -58,7 +60,7 @@ func _physics_process(delta: float) -> void:
     key3_pressed_last_frame = key3_current
 
     if Input.is_action_just_pressed("ui_accept") or Input.is_key_pressed(KEY_SPACE):
-        auto_drive = !auto_drive
+        driving_controller.auto_drive_enabled = not driving_controller.auto_drive_enabled
 
     if Input.is_key_pressed(KEY_R):
         reset_simulation()
@@ -69,13 +71,19 @@ func _physics_process(delta: float) -> void:
     var requested_steering: float = 0.0
     var braking_state: String = "COASTING"
     var obstacle_state_str: String = "CLEAR"
+    var manual_input: float = 0.0
+
+    if Input.is_action_pressed("ui_up") or Input.is_key_pressed(KEY_W):
+        manual_input = 1.0
+    elif Input.is_action_pressed("ui_down") or Input.is_key_pressed(KEY_S):
+        manual_input = -1.0
 
     if steering_test_mode:
         # Manual kinematic demonstration only; no obstacle or AEB evaluation.
-        if Input.is_action_pressed("ui_up") or Input.is_key_pressed(KEY_W):
+        if manual_input > 0.0:
             requested_acceleration = ego_max_accel
             braking_state = "MANUAL ACCEL"
-        elif Input.is_action_pressed("ui_down") or Input.is_key_pressed(KEY_S):
+        elif manual_input < 0.0:
             requested_acceleration = -ego_max_brake
             braking_state = "MANUAL BRAKE"
 
@@ -84,58 +92,36 @@ func _physics_process(delta: float) -> void:
         elif Input.is_key_pressed(KEY_D):
             requested_steering = vehicle_dynamics.steering_limit_rad
         obstacle_state_str = "NOT EVALUATED"
+    elif scenario_blocked_road:
+        var blocked_decision: Dictionary = driving_controller.request_blocked_road_acceleration(
+            ego_pos,
+            ego_speed,
+            lead_pos,
+            ego_length,
+            lead_length,
+            delta,
+            manual_input,
+            ego_max_accel,
+            ego_max_brake,
+            ego_max_speed
+        )
+        requested_acceleration = blocked_decision.acceleration
+        braking_state = blocked_decision.braking_state
+        obstacle_state_str = blocked_decision.get("obstacle_state", "CLEAR")
     else:
-        var manual_input: float = 0.0
-        if Input.is_action_pressed("ui_up") or Input.is_key_pressed(KEY_W):
-            manual_input = 1.0
-        elif Input.is_action_pressed("ui_down") or Input.is_key_pressed(KEY_S):
-            manual_input = -1.0
-
-        # --- 2. Existing Straight-Line Autonomous Control ---
-        if auto_drive && manual_input == 0.0:
-            if scenario_blocked_road:
-                # Blocked Road Scenario: Obstacle at Z=60
-                var lead_rear: float = lead_pos - lead_length / 2.0
-                var ego_front: float = ego_pos + ego_length / 2.0
-                var bumper_sep: float = lead_rear - ego_front
-
-                var braking_dist: float = (ego_speed * ego_speed) / (2.0 * ego_max_brake) + 2.5 + ego_speed * delta
-
-                if bumper_sep <= braking_dist || ego_pos >= lead_pos - 12.0:
-                    requested_acceleration = -ego_max_brake
-                    braking_state = "AEB / PLANNED BRAKING"
-                    obstacle_state_str = "OBSTACLE DETECTED (APPROACHING)"
-                elif ego_speed < ego_max_speed:
-                    requested_acceleration = ego_max_accel
-                    braking_state = "ACCELERATING"
-                    obstacle_state_str = "OBSTACLE AHEAD (Z=60)"
-                else:
-                    obstacle_state_str = "OBSTACLE AHEAD (Z=60)"
-            else:
-                # Clear Road Scenario: Stop at Point B (Z=100)
-                var dist_to_b: float = target_b - ego_pos
-                var braking_dist: float = (ego_speed * ego_speed) / (2.0 * ego_max_brake) + ego_speed * delta
-
-                if dist_to_b <= braking_dist + 1.0 || ego_pos >= target_b:
-                    requested_acceleration = -ego_max_brake
-                    braking_state = "STOPPING AT DESTINATION B"
-                    obstacle_state_str = "CLEAR ROAD"
-                elif ego_speed < ego_max_speed:
-                    requested_acceleration = ego_max_accel
-                    braking_state = "ACCELERATING TO B"
-                    obstacle_state_str = "CLEAR ROAD"
-                else:
-                    obstacle_state_str = "CLEAR ROAD"
-        else:
-            # Manual Input Override
-            if manual_input > 0.0:
-                requested_acceleration = manual_input * ego_max_accel
-                braking_state = "MANUAL ACCEL"
-            elif manual_input < 0.0:
-                requested_acceleration = manual_input * ego_max_brake
-                braking_state = "MANUAL BRAKE"
-            else:
-                requested_acceleration = -0.5
+        var clear_road_decision: Dictionary = driving_controller.request_clear_road_acceleration(
+            ego_pos,
+            ego_speed,
+            target_b,
+            delta,
+            manual_input,
+            ego_max_accel,
+            ego_max_brake,
+            ego_max_speed
+        )
+        requested_acceleration = clear_road_decision.acceleration
+        braking_state = clear_road_decision.braking_state
+        obstacle_state_str = "CLEAR ROAD"
 
     vehicle_dynamics.step(requested_acceleration, delta, requested_steering)
     if scenario_blocked_road && not steering_test_mode:
@@ -161,33 +147,44 @@ func _physics_process(delta: float) -> void:
         follow_camera.position = ego_position + Vector3.UP * 3.6 - forward * 10.0
         follow_camera.look_at(ego_position + Vector3.UP * 0.6 + forward * 15.0, Vector3.UP)
 
-    # --- 4. Straight-Scenario Clearance and Status ---
+    # --- 4. Scenario Status ---
     var raw_bumper_sep: float = 0.0
     var contact_status: String
     if steering_test_mode:
         contact_status = "NOT EVALUATED"
-    else:
-        if scenario_blocked_road:
-            var lead_rear: float = lead_pos - lead_length / 2.0
-            var ego_front: float = state_z + ego_length / 2.0
-            raw_bumper_sep = lead_rear - ego_front
-            if raw_bumper_sep <= 0.0:
-                contact_status = "!! CONTACT / COLLISION DETECTED !!"
-            elif raw_bumper_sep < 2.0:
-                contact_status = "! WARNING: CLEARANCE < 2.0m !"
-            elif state_speed == 0.0 && state_z > 10.0:
-                contact_status = "SUCCESS: STOPPED SAFELY (CL >= 2.0m)"
-            else:
-                contact_status = "SAFE DISTANCE"
+    elif scenario_blocked_road:
+        var lead_rear: float = lead_pos - lead_length / 2.0
+        var ego_front: float = state_z + ego_length / 2.0
+        raw_bumper_sep = lead_rear - ego_front
+        if raw_bumper_sep <= 0.0:
+            contact_status = "!! CONTACT / COLLISION DETECTED !!"
+        elif raw_bumper_sep < 2.0:
+            contact_status = "! WARNING: CLEARANCE < 2.0m !"
+        elif state_speed == 0.0 && state_z > 10.0:
+            contact_status = "SUCCESS: STOPPED SAFELY (CL >= 2.0m)"
         else:
-            raw_bumper_sep = target_b - state_z
-            if state_speed == 0.0 && state_z >= 98.0:
-                contact_status = "SUCCESS: STOPPED AT POINT B (Z=100)"
-            else:
-                contact_status = "SAFE DISTANCE"
+            contact_status = "SAFE DISTANCE"
+    else:
+        raw_bumper_sep = target_b - state_z
+        contact_status = driving_controller.clear_road_arrival_status(
+            target_b,
+            state_z,
+            state_speed,
+            manual_input
+        )
 
     # --- 5. HUD ---
     if hud_label:
+        var control_mode: String
+        if steering_test_mode:
+            control_mode = "STEERING TEST (MANUAL KINEMATIC DEMO)"
+        elif driving_controller.auto_drive_enabled && manual_input == 0.0:
+            control_mode = "AUTONOMOUS"
+        elif not driving_controller.auto_drive_enabled:
+            control_mode = "MANUAL - AUTO DESTINATION CONTROL DISABLED"
+        else:
+            control_mode = "MANUAL OVERRIDE - AUTO DESTINATION CONTROL PAUSED"
+
         if steering_test_mode:
             hud_label.text = "[STEERING TEST - KINEMATIC DEMONSTRATION]\n" + \
                 "Not autonomous lane following; obstacle/AEB safety is not evaluated.\n" + \
@@ -203,6 +200,7 @@ func _physics_process(delta: float) -> void:
             var scenario_name: String = "BLOCKED-ROAD (Obstacle at Z=60)" if scenario_blocked_road else "CLEAR-ROAD (Destination B at Z=100)"
             hud_label.text = "[EASY DRIVE GODOT DEMO]\n" + \
                 "Scenario: %s\n" % [scenario_name] + \
+                "Control Mode: %s\n" % [control_mode] + \
                 "Ego Position: X %.2f m | Z %.2f m | Target B: %.1f m\n" % [state_x, state_z, target_b] + \
                 "Heading: %.2f rad | Steering: %.1f deg\n" % [state_heading, rad_to_deg(state_steering)] + \
                 "Ego Speed: %.1f m/s (%.1f km/h)\n" % [state_speed, state_speed * 3.6] + \
@@ -210,6 +208,6 @@ func _physics_process(delta: float) -> void:
                 "Signed Clearance / Distance: %.2f m\n" % [raw_bumper_sep] + \
                 "Obstacle State: %s\n" % [obstacle_state_str] + \
                 "Braking State: %s\n" % [braking_state] + \
-                "Status: %s\n" % [contact_status] + \
+                "Destination Status: %s\n" % [contact_status] + \
                 "----------------------------------------\n" + \
                 "Controls: [1] Blocked-Road | [2] Clear-Road | [3] Steering Test | [SPACE] Auto/Man | [R] Reset"
