@@ -37,3 +37,10 @@ and requires that caller to confirm installation without changing vehicle
 pose. Station arrival is accepted only with controller certification (or a
 validated stationary pickup), stop proximity, low speed, valid localization,
 and no manual intervention.
+
+For route handoffs after the shuttle has moved, use
+`CampusRoutePlanner.plan_route_from_pose()` with the actual station position
+and heading, then pass that route to
+`PassengerJourney.request_next_route_installation()`. The dispatcher reserves
+station-to-station route availability but cannot predict later arrival
+headings; each leg should be selected from the then-current vehicle pose.

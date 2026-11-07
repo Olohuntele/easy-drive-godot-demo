@@ -56,8 +56,12 @@ func assign_booking(booking_result: Dictionary) -> Dictionary:
     return {"valid": true, "failure_reason": "", "state": state}
 
 ## Returns a route-install request after validating the real pose and heading.
+## Supply a pose-planned route to avoid assuming later journey-leg headings in advance.
 ## The caller installs its centerline in RouteNavigator and then confirms the result.
-func request_next_route_installation(vehicle_state: Dictionary) -> Dictionary:
+func request_next_route_installation(
+    vehicle_state: Dictionary,
+    route_override: Dictionary = {}
+) -> Dictionary:
     var leg: String
     match state:
         ASSIGNED:
@@ -74,11 +78,13 @@ func request_next_route_installation(vehicle_state: Dictionary) -> Dictionary:
             return _failure("route_installation_not_allowed_in_current_state")
 
     var routes: Dictionary = _booking.get("routes", {})
-    var route: Dictionary = routes.get(leg, {})
+    var route: Dictionary = route_override if not route_override.is_empty() \
+        else routes.get(leg, {})
     if not route.get("valid", false):
         return _block("required_%s_route_unavailable" % leg)
     var target_station_id: String = _target_station_for_leg(leg)
-    if route.get("destination_station_id", "") != target_station_id:
+    if route.get("origin_station_id", "") != _source_station_for_leg(leg) \
+        || route.get("destination_station_id", "") != target_station_id:
         return _block("route_destination_mismatch")
 
     var already_at_pickup: bool = leg == "pickup" \
@@ -298,6 +304,16 @@ func _target_station_for_leg(leg: String) -> String:
             return str(_booking.get("destination_station_id", ""))
         "return":
             return str(_booking.get("service_station_id", ""))
+    return ""
+
+func _source_station_for_leg(leg: String) -> String:
+    match leg:
+        "pickup":
+            return str(_booking.get("service_station_id", ""))
+        "destination":
+            return str(_booking.get("origin_station_id", ""))
+        "return":
+            return str(_booking.get("destination_station_id", ""))
     return ""
 
 func _expected_arrival_state(leg: String) -> String:

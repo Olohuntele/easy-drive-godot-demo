@@ -11,6 +11,7 @@ const POSITION_TOLERANCE_M: float = 0.001
 const LENGTH_TOLERANCE_M: float = 0.001
 const COST_COMPARISON_EPSILON_M: float = 0.000001
 const MAX_HEADING_CHANGE_RAD: float = deg_to_rad(12.0)
+const ORIGIN_POSITION_TOLERANCE_M: float = 1.0
 const TURN_RADIUS_SAFETY_FACTOR: float = 1.25
 const NAVIGATOR_DEVIATION_TOLERANCE_M: float = 0.25
 const CURVATURE_EPSILON: float = 0.000001
@@ -25,6 +26,39 @@ func _init(network: RefCounted = null, vehicle_dynamics: RefCounted = null) -> v
 ## Returns the shortest legal, locally feasible route between two distinct stations.
 ## A valid result is planner-level geometry only; tracking_validated is always false.
 func plan_route(origin_station_id: String, destination_station_id: String) -> Dictionary:
+    return _plan_route(
+        origin_station_id,
+        destination_station_id,
+        false,
+        Vector2.ZERO,
+        0.0
+    )
+
+## Selects a legal route whose first tangent matches the current physical shuttle pose.
+## This validates only route initialization; later leg headings must be planned when known.
+func plan_route_from_pose(
+    origin_station_id: String,
+    destination_station_id: String,
+    vehicle_position_xz: Vector2,
+    vehicle_heading_rad: float
+) -> Dictionary:
+    if not vehicle_position_xz.is_finite() || not is_finite(vehicle_heading_rad):
+        return _failure("invalid_origin_pose")
+    return _plan_route(
+        origin_station_id,
+        destination_station_id,
+        true,
+        vehicle_position_xz,
+        vehicle_heading_rad
+    )
+
+func _plan_route(
+    origin_station_id: String,
+    destination_station_id: String,
+    constrain_origin_pose: bool,
+    vehicle_position_xz: Vector2,
+    vehicle_heading_rad: float
+) -> Dictionary:
     if _network == null || not _network.is_valid:
         var network_errors: PackedStringArray = PackedStringArray()
         if _network != null && _network.has_method("get_validation_errors"):
@@ -45,6 +79,17 @@ func plan_route(origin_station_id: String, destination_station_id: String) -> Di
     var destination_stop: Dictionary = _network.get_station_stop(destination_station_id)
     if not origin_stop.get("valid", false) || not destination_stop.get("valid", false):
         return _failure("invalid_station_stop")
+    var origin_position_error_m: float = 0.0
+    if constrain_origin_pose:
+        origin_position_error_m = vehicle_position_xz.distance_to(origin_stop.position_xz)
+        if origin_position_error_m > ORIGIN_POSITION_TOLERANCE_M:
+            return _failure(
+                "origin_pose_incompatible",
+                {
+                    "position_error_m": origin_position_error_m,
+                    "position_tolerance_m": ORIGIN_POSITION_TOLERANCE_M
+                }
+            )
 
     var segment_cache: Dictionary = {}
     var segment_errors: Dictionary = {}
@@ -60,30 +105,49 @@ func plan_route(origin_station_id: String, destination_station_id: String) -> Di
         destination_stop.node_id,
         segment_cache,
         segment_errors,
-        dynamics_limits
+        dynamics_limits,
+        constrain_origin_pose,
+        vehicle_heading_rad
     )
     if not search.found:
         return _failure(search.reason, {"details": search.details})
 
-    return _build_route_result(
+    var route_result: Dictionary = _build_route_result(
         search.segment_ids,
         origin_stop,
         destination_stop,
         segment_cache,
         dynamics_limits
     )
+    if route_result.get("valid", false) && constrain_origin_pose:
+        var first_segment: Dictionary = segment_cache[str(search.segment_ids[0])]
+        var first_points: Array = first_segment.centerline_points
+        var first_tangent: Vector2 = (first_points[1] - first_points[0]).normalized()
+        var first_heading_rad: float = atan2(first_tangent.x, first_tangent.y)
+        route_result["heading_aware"] = true
+        route_result["origin_position_error_m"] = origin_position_error_m
+        route_result["origin_heading_error_rad"] = absf(wrapf(
+            vehicle_heading_rad - first_heading_rad,
+            -PI,
+            PI
+        ))
+    return route_result
 
 func _find_shortest_path(
     origin_node_id: String,
     destination_node_id: String,
     segment_cache: Dictionary,
     segment_errors: Dictionary,
-    dynamics_limits: Dictionary
+    dynamics_limits: Dictionary,
+    constrain_origin_heading: bool = false,
+    origin_heading_rad: float = 0.0
 ) -> Dictionary:
     var distances: Dictionary = {}
     var paths: Dictionary = {}
     var pending: Dictionary = {}
     var geometry_failures := PackedStringArray()
+    var had_tangent_compatible_start: bool = false
+    var had_heading_compatible_start: bool = false
 
     for segment in _network.get_outgoing_segments(origin_node_id):
         var segment_id: String = str(segment.id)
@@ -101,6 +165,25 @@ func _find_shortest_path(
                 % [segment_id, origin_node_id]
             )
             continue
+        if constrain_origin_heading:
+            var start_points: Array = canonical_segment.centerline_points
+            var start_tangent: Vector2 = (start_points[1] - start_points[0]).normalized()
+            var start_heading_rad: float = atan2(start_tangent.x, start_tangent.y)
+            var heading_error_rad: float = absf(wrapf(
+                origin_heading_rad - start_heading_rad,
+                -PI,
+                PI
+            ))
+            if heading_error_rad > MAX_HEADING_CHANGE_RAD:
+                continue
+            had_tangent_compatible_start = true
+            if not _origin_transition_is_permitted(
+                origin_node_id,
+                segment_id,
+                origin_heading_rad
+            ):
+                continue
+            had_heading_compatible_start = true
         var start_cost: float = canonical_segment.length_m
         if not distances.has(segment_id) || start_cost < distances[segment_id]:
             distances[segment_id] = start_cost
@@ -172,6 +255,16 @@ func _find_shortest_path(
             "reason": "geometric_infeasibility",
             "details": geometry_failures
         }
+    if constrain_origin_heading && not had_heading_compatible_start:
+        return {
+            "found": false,
+            "reason": "no_heading_compatible_route" if not had_tangent_compatible_start
+                else "no_permitted_heading_compatible_route",
+            "details": PackedStringArray([
+                "no outgoing directed centerline and permitted junction transition match the vehicle heading within %.3f degrees"
+                    % rad_to_deg(MAX_HEADING_CHANGE_RAD)
+            ])
+        }
     return {
         "found": false,
         "reason": "no_legal_route",
@@ -179,6 +272,49 @@ func _find_shortest_path(
             "no permitted directed-segment path connects the station stop nodes"
         ])
     }
+
+func _origin_transition_is_permitted(
+    origin_node_id: String,
+    outgoing_segment_id: String,
+    origin_heading_rad: float
+) -> bool:
+    var matching_incoming_ids: PackedStringArray = PackedStringArray()
+    for incoming in _network.get_segments():
+        if incoming.get("end_node_id", "") != origin_node_id:
+            continue
+        var points_value: Variant = incoming.get("centerline_points", null)
+        if not points_value is Array || points_value.size() < 2:
+            continue
+        var points: Array = points_value
+        if not points[points.size() - 1] is Vector2 \
+            || not points[points.size() - 2] is Vector2:
+            continue
+        var tangent: Vector2 = (
+            points[points.size() - 1] - points[points.size() - 2]
+        ).normalized()
+        var incoming_heading_rad: float = atan2(tangent.x, tangent.y)
+        var heading_error_rad: float = absf(wrapf(
+            origin_heading_rad - incoming_heading_rad,
+            -PI,
+            PI
+        ))
+        if heading_error_rad <= MAX_HEADING_CHANGE_RAD:
+            matching_incoming_ids.append(str(incoming.id))
+
+    if matching_incoming_ids.is_empty():
+        return true
+
+    var junction: Dictionary = _network.get_node(origin_node_id)
+    var allowed_turns: Variant = junction.get("allowed_turns", null)
+    if not allowed_turns is Array:
+        return false
+    for turn in allowed_turns:
+        if not turn is Dictionary \
+            || str(turn.get("outgoing_segment_id", "")) != outgoing_segment_id:
+            continue
+        if matching_incoming_ids.has(str(turn.get("incoming_segment_id", ""))):
+            return true
+    return false
 
 func _select_next_segment(pending: Dictionary, distances: Dictionary, paths: Dictionary) -> String:
     var selected_id: String = ""
