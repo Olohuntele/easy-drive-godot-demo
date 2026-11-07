@@ -12,6 +12,10 @@ const ROUTE_ROAD_HALF_WIDTH_M: float = 4.0
 const ROUTE_BOUNDARY_OFFSET_M: float = 3.82
 const ROUTE_BOUNDARY_WIDTH_M: float = 0.16
 const ROUTE_CENTERLINE_WIDTH_M: float = 0.12
+const MODE4_CAMERA_POSITION_RESPONSE: float = 8.0
+const MODE4_CAMERA_HEADING_RESPONSE: float = 6.0
+const MODE4_CAMERA_FOLLOW_DISTANCE_M: float = 10.0
+const MODE4_CAMERA_LOOKAHEAD_M: float = 15.0
 
 @export var ego_max_accel: float = 3.5
 @export var ego_max_brake: float = 6.0
@@ -53,6 +57,8 @@ var route_surface_mesh: ArrayMesh
 var route_left_boundary_mesh: ArrayMesh
 var route_right_boundary_mesh: ArrayMesh
 var route_centerline_mesh: ArrayMesh
+var mode4_camera_heading_rad: float = 0.0
+var mode4_camera_initialized: bool = false
 
 func _ready() -> void:
     vehicle_dynamics.max_acceleration = ego_max_accel
@@ -75,6 +81,12 @@ func reset_simulation() -> void:
                 0.0,
                 samples[0].x,
                 initial_heading
+            )
+            _update_mode4_camera(
+                Vector3(samples[0].x, 0.4, samples[0].y),
+                initial_heading,
+                0.0,
+                true
             )
         else:
             push_error("Could not initialize the autonomous route-following route.")
@@ -136,7 +148,7 @@ func select_route_variant(variant_name: String) -> void:
 func _route_waypoints() -> Array[Vector2]:
     if route_variant == ROUTE_LEFT:
         var left_waypoints: Array[Vector2] = []
-        for point in RouteNavigator.create_broad_bend_waypoints():
+        for point in _right_route_waypoints():
             left_waypoints.append(Vector2(-point.x, point.y))
         return left_waypoints
     if route_variant == ROUTE_S_CURVE:
@@ -151,7 +163,18 @@ func _route_waypoints() -> Array[Vector2]:
             Vector2(-8.0, 108.0),
             Vector2(-8.0, 124.0)
         ]
-    return RouteNavigator.create_broad_bend_waypoints()
+    return _right_route_waypoints()
+
+func _right_route_waypoints() -> Array[Vector2]:
+    return [
+        Vector2(0.0, 0.0),
+        Vector2(0.3, 8.0),
+        Vector2(2.2, 20.0),
+        Vector2(6.5, 36.0),
+        Vector2(15.0, 56.0),
+        Vector2(29.0, 76.0),
+        Vector2(45.0, 94.0)
+    ]
 
 func _update_route_visuals(centerline_samples: PackedVector2Array) -> void:
     route_visual_centerline_xz = centerline_samples.duplicate()
@@ -432,12 +455,7 @@ func _physics_process(delta: float) -> void:
 
     if follow_camera:
         if autonomous_route_mode:
-            var fixed_forward: Vector3 = Vector3(0.0, 0.0, 1.0)
-            follow_camera.position = ego_position + Vector3.UP * 3.6 - fixed_forward * 10.0
-            follow_camera.look_at(
-                ego_position + Vector3.UP * 0.6 + fixed_forward * 15.0,
-                Vector3.UP
-            )
+            _update_mode4_camera(ego_position, state_heading, delta)
         else:
             follow_camera.position = ego_position + Vector3.UP * 3.6 - forward * 10.0
             follow_camera.look_at(ego_position + Vector3.UP * 0.6 + forward * 15.0, Vector3.UP)
@@ -539,3 +557,42 @@ func _physics_process(delta: float) -> void:
                 "Destination Status: %s\n" % [contact_status] + \
                 "----------------------------------------\n" + \
                 "Controls: [1] Blocked-Road | [2] Clear-Road | [3] Steering Test | [4] Route Following | [SPACE] Auto/Man | [R] Reset"
+
+func _update_mode4_camera(
+    vehicle_position: Vector3,
+    vehicle_heading_rad: float,
+    delta: float,
+    snap_position: bool = false
+) -> void:
+    if not follow_camera:
+        return
+    if not mode4_camera_initialized:
+        mode4_camera_heading_rad = vehicle_heading_rad
+        mode4_camera_initialized = true
+    elif delta > 0.0:
+        var heading_weight: float = 1.0 - exp(-MODE4_CAMERA_HEADING_RESPONSE * delta)
+        mode4_camera_heading_rad = lerp_angle(
+            mode4_camera_heading_rad,
+            vehicle_heading_rad,
+            heading_weight
+        )
+
+    var camera_forward := Vector3(
+        sin(mode4_camera_heading_rad),
+        0.0,
+        cos(mode4_camera_heading_rad)
+    )
+    var desired_position: Vector3 = vehicle_position + Vector3.UP * 3.6 \
+        - camera_forward * MODE4_CAMERA_FOLLOW_DISTANCE_M
+    if snap_position:
+        follow_camera.global_position = desired_position
+    else:
+        var position_weight: float = 1.0 - exp(-MODE4_CAMERA_POSITION_RESPONSE * maxf(delta, 0.0))
+        follow_camera.global_position = follow_camera.global_position.lerp(
+            desired_position,
+            position_weight
+        )
+    follow_camera.look_at(
+        vehicle_position + Vector3.UP * 0.6 + camera_forward * MODE4_CAMERA_LOOKAHEAD_M,
+        Vector3.UP
+    )
