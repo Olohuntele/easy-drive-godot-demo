@@ -286,6 +286,14 @@ func report_manual_intervention() -> Dictionary:
         return _failure("no_active_journey")
     return _block("manual_intervention")
 
+## Blocks an active service when its route executor reports a terminal safety failure.
+func block_journey(reason: String) -> Dictionary:
+    if state == IDLE:
+        return _failure("no_active_journey")
+    if reason.strip_edges().is_empty():
+        return _failure("block_reason_required")
+    return _block(reason.strip_edges())
+
 func get_active_booking() -> Dictionary:
     return _booking.duplicate(true)
 

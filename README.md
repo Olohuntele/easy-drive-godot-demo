@@ -44,3 +44,23 @@ and heading, then pass that route to
 `PassengerJourney.request_next_route_installation()`. The dispatcher reserves
 station-to-station route availability but cannot predict later arrival
 headings; each leg should be selected from the then-current vehicle pose.
+
+## Headless passenger journey coordinator
+
+`CampusServiceCoordinator` connects the dispatcher and journey state machine
+to pose-aware route planning, `RouteNavigator`, `RouteFollowingController`, and
+`VehicleDynamics`. It is a standalone headless API and is not wired into
+`scenes/main.tscn`.
+
+Create a coordinator and call `initialize_service(station_id, position_xz,
+heading_rad)` once with the shuttle's initial pose at its service station.
+Then use `request_booking(pickup_station_id, destination_station_id)`,
+`step(delta)`, `confirm_boarding()`,
+`confirm_passenger_exit()`, and `get_service_snapshot()`. Provide a unique
+non-negative physics tick ID as an optional second `step()` argument for
+custom/headless loops; otherwise the coordinator uses Godot's current physics
+frame to reject duplicate calls within that tick. Arrival and return-to-service
+are certified from controller telemetry and the actual dynamics snapshot;
+route handoffs do not reset or modify vehicle pose. Failed route execution,
+manual interruption, or lost localization leaves the booking reserved in a
+blocked state.
