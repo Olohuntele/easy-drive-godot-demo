@@ -4,6 +4,8 @@ const VehicleDynamics = preload("res://scripts/vehicle_dynamics.gd")
 const DrivingController = preload("res://scripts/driving_controller.gd")
 const RouteNavigator = preload("res://scripts/route_navigator.gd")
 const RouteFollowingController = preload("res://scripts/route_following_controller.gd")
+const CampusServiceCoordinator = preload("res://scripts/campus_service_coordinator.gd")
+const CampusRouteMap = preload("res://scripts/campus_route_map.gd")
 
 const ROUTE_LEFT: String = "LEFT"
 const ROUTE_RIGHT: String = "RIGHT"
@@ -32,6 +34,7 @@ var target_b: float = 100.0
 var scenario_blocked_road: bool = true
 var steering_test_mode: bool = false
 var autonomous_route_mode: bool = false
+var passenger_service_mode: bool = false
 var route_navigation_ready: bool = false
 var route_variant: String = ROUTE_RIGHT
 var route_visual_centerline_xz: PackedVector2Array = PackedVector2Array()
@@ -41,6 +44,12 @@ var key5_pressed_last_frame: bool = false
 var key6_pressed_last_frame: bool = false
 var key7_pressed_last_frame: bool = false
 var space_pressed_last_frame: bool = false
+var service_booking_key_pressed_last_frame: bool = false
+var service_boarding_key_pressed_last_frame: bool = false
+var service_exit_key_pressed_last_frame: bool = false
+var service_reset_key_pressed_last_frame: bool = false
+var service_key1_pressed_last_frame: bool = false
+var service_key2_pressed_last_frame: bool = false
 var ego_length: float = 4.0
 var lead_length: float = 4.0
 
@@ -51,6 +60,7 @@ var lead_length: float = 4.0
 @onready var straight_road: MeshInstance3D = $Road
 @onready var straight_centerline: MeshInstance3D = $CenterLine
 @onready var straight_roadside_scenery: Node3D = $RoadsideScenery
+@onready var canvas_layer: CanvasLayer = $CanvasLayer
 
 var route_visual_root: Node3D
 var route_surface_mesh: ArrayMesh
@@ -59,8 +69,18 @@ var route_right_boundary_mesh: ArrayMesh
 var route_centerline_mesh: ArrayMesh
 var mode4_camera_heading_rad: float = 0.0
 var mode4_camera_initialized: bool = false
+var service_coordinator: RefCounted
+var service_road_root: Node3D
+var service_active_route: MeshInstance3D
+var service_route_map: Control
+var service_visual_leg: String = ""
+var service_mode_message: String = ""
 
 func _ready() -> void:
+    print(
+        "[MODE5 DIAG] Simulation startup: scene='%s' script='%s'"
+            % [get_scene_file_path(), get_script().resource_path]
+    )
     vehicle_dynamics.max_acceleration = ego_max_accel
     vehicle_dynamics.max_braking = ego_max_brake
     vehicle_dynamics.max_speed = ego_max_speed
@@ -114,23 +134,35 @@ func reset_simulation() -> void:
         lead_speed = 0.0
 
 func select_blocked_road_mode() -> void:
+    if not _can_leave_passenger_service():
+        return
+    _leave_passenger_service_mode()
     steering_test_mode = false
     autonomous_route_mode = false
     scenario_blocked_road = true
     reset_simulation()
 
 func select_clear_road_mode() -> void:
+    if not _can_leave_passenger_service():
+        return
+    _leave_passenger_service_mode()
     steering_test_mode = false
     autonomous_route_mode = false
     scenario_blocked_road = false
     reset_simulation()
 
 func toggle_steering_test_mode() -> void:
+    if not _can_leave_passenger_service():
+        return
+    _leave_passenger_service_mode()
     steering_test_mode = not steering_test_mode
     autonomous_route_mode = false
     reset_simulation()
 
 func select_route_following_mode() -> void:
+    if not _can_leave_passenger_service():
+        return
+    _leave_passenger_service_mode()
     steering_test_mode = false
     autonomous_route_mode = true
     scenario_blocked_road = false
@@ -144,6 +176,512 @@ func select_route_variant(variant_name: String) -> void:
         return
     route_variant = variant_name
     reset_simulation()
+
+func select_passenger_service_mode() -> Dictionary:
+    print(
+        "[MODE5 DIAG] Entry request: active=%s position=(%.3f, %.3f) speed=%.3f m/s"
+            % [
+                passenger_service_mode,
+                vehicle_dynamics.position_x_m,
+                vehicle_dynamics.position_z_m,
+                vehicle_dynamics.speed_mps
+            ]
+    )
+    if passenger_service_mode:
+        print("[MODE5 DIAG] Entry request ignored: Mode 5 is already active.")
+        return {"valid": true, "failure_reason": ""}
+    if service_coordinator != null && not _can_leave_passenger_service():
+        print("[MODE5 DIAG] Entry rejected: %s" % service_mode_message)
+        return {"valid": false, "failure_reason": service_mode_message}
+    var coordinator = CampusServiceCoordinator.new()
+    var network: RefCounted = coordinator.network
+    var service_stop: Dictionary = network.get_station_stop("north_gate")
+    if not service_stop.get("valid", false):
+        service_mode_message = "Mode 5 could not find the North Gate service station."
+        push_warning("Mode 5 entry rejected: " + service_mode_message)
+        print("[MODE5 DIAG] Entry rejected: " + service_mode_message)
+        _update_legacy_hud_message()
+        return {"valid": false, "failure_reason": "service_station_unavailable"}
+    var service_start_position: Vector2 = service_stop.position_xz
+
+    var launch_segment: Dictionary = network.get_segment("north_to_east")
+    var launch_points: Array = launch_segment.get("centerline_points", [])
+    if launch_points.size() < 2:
+        service_mode_message = "Mode 5 could not determine the North Gate road heading."
+        push_warning("Mode 5 entry rejected: " + service_mode_message)
+        print("[MODE5 DIAG] Entry rejected: " + service_mode_message)
+        _update_legacy_hud_message()
+        return {"valid": false, "failure_reason": "service_launch_tangent_unavailable"}
+    var launch_tangent: Vector2 = launch_points[1] - launch_points[0]
+    if launch_tangent.length_squared() <= 0.000001:
+        service_mode_message = "Mode 5 could not determine the North Gate road heading."
+        push_warning("Mode 5 entry rejected: " + service_mode_message)
+        print("[MODE5 DIAG] Entry rejected: " + service_mode_message)
+        _update_legacy_hud_message()
+        return {"valid": false, "failure_reason": "service_launch_tangent_unavailable"}
+    var launch_heading_rad: float = atan2(launch_tangent.x, launch_tangent.y)
+    coordinator.dynamics.max_acceleration = vehicle_dynamics.max_acceleration
+    coordinator.dynamics.max_braking = vehicle_dynamics.max_braking
+    coordinator.dynamics.max_speed = vehicle_dynamics.max_speed
+    var initialized: Dictionary = coordinator.initialize_service(
+        "north_gate",
+        service_start_position,
+        launch_heading_rad
+    )
+    if not initialized.get("valid", false):
+        service_mode_message = "Mode 5 could not initialize: %s" % initialized.get(
+            "failure_reason",
+            "unknown initialization error"
+        )
+        push_warning("Mode 5 entry rejected: " + service_mode_message)
+        print("[MODE5 DIAG] Entry rejected: " + service_mode_message)
+        _update_legacy_hud_message()
+        return initialized
+
+    service_coordinator = coordinator
+    passenger_service_mode = true
+    steering_test_mode = false
+    autonomous_route_mode = false
+    service_mode_message = ""
+    var visuals_ready: bool = _ensure_service_visuals(service_coordinator.network)
+    if straight_road:
+        straight_road.visible = false
+    if straight_centerline:
+        straight_centerline.visible = false
+    if straight_roadside_scenery:
+        straight_roadside_scenery.visible = false
+    if route_visual_root:
+        route_visual_root.visible = false
+    if lead_car:
+        lead_car.visible = false
+    var pose := Vector3(service_start_position.x, 0.4, service_start_position.y)
+    ego_car.position = pose
+    ego_car.rotation.y = launch_heading_rad
+    _update_mode4_camera(pose, launch_heading_rad, 0.0, true)
+    _update_passenger_service_hud(service_coordinator.get_service_snapshot())
+    if visuals_ready:
+        print(
+            "[MODE5 DIAG] Visual initialization success: roads=%d stations=%d map=%s HUD=%s"
+                % [
+                    service_coordinator.network.get_segment_ids().size(),
+                    service_coordinator.network.get_station_ids().size(),
+                    service_route_map != null,
+                    hud_label != null
+                ]
+        )
+    else:
+        push_error("[MODE5 DIAG] Visual initialization failure: required scene visuals are missing.")
+    print(
+        "[MODE5 DIAG] Mode 5 accepted: state=%s service_station=%s"
+            % [service_coordinator.journey.state, service_coordinator.service_station_id]
+    )
+    return {"valid": true, "failure_reason": ""}
+
+func request_service_demo_booking() -> Dictionary:
+    if not passenger_service_mode || service_coordinator == null:
+        return {"valid": false, "failure_reason": "passenger_service_mode_not_active"}
+    var result: Dictionary = service_coordinator.request_booking(
+        "sports_hall",
+        "innovation_centre"
+    )
+    service_mode_message = (
+        "Booking accepted: Sports Hall to Innovation Centre."
+        if result.get("valid", false)
+        else "Booking rejected: %s" % _humanize_failure(str(result.get("failure_reason", "")))
+    )
+    _sync_passenger_service_visuals(service_coordinator.get_service_snapshot())
+    _update_passenger_service_hud(service_coordinator.get_service_snapshot())
+    return result
+
+func confirm_service_demo_boarding() -> Dictionary:
+    if not passenger_service_mode || service_coordinator == null:
+        return {"valid": false, "failure_reason": "passenger_service_mode_not_active"}
+    var result: Dictionary = service_coordinator.confirm_boarding()
+    service_mode_message = (
+        "Boarding confirmed."
+        if result.get("valid", false)
+        else "Boarding not accepted: %s" % _humanize_failure(
+            str(result.get("failure_reason", ""))
+        )
+    )
+    _sync_passenger_service_visuals(service_coordinator.get_service_snapshot())
+    _update_passenger_service_hud(service_coordinator.get_service_snapshot())
+    return result
+
+func confirm_service_demo_exit() -> Dictionary:
+    if not passenger_service_mode || service_coordinator == null:
+        return {"valid": false, "failure_reason": "passenger_service_mode_not_active"}
+    var result: Dictionary = service_coordinator.confirm_passenger_exit()
+    service_mode_message = (
+        "Passenger exit confirmed."
+        if result.get("valid", false)
+        else "Exit not accepted: %s" % _humanize_failure(
+            str(result.get("failure_reason", ""))
+        )
+    )
+    _sync_passenger_service_visuals(service_coordinator.get_service_snapshot())
+    _update_passenger_service_hud(service_coordinator.get_service_snapshot())
+    return result
+
+func restart_service_demo() -> Dictionary:
+    if not passenger_service_mode || service_coordinator == null:
+        return {"valid": false, "failure_reason": "passenger_service_mode_not_active"}
+    var snapshot: Dictionary = service_coordinator.get_service_snapshot()
+    if snapshot.service_state != "IDLE" \
+        || service_coordinator.dispatcher.has_active_booking():
+        service_mode_message = (
+            "Restart blocked: finish the passenger journey first. "
+            + "An occupied or blocked booking is never discarded."
+        )
+        return {"valid": false, "failure_reason": "active_booking_cannot_be_discarded"}
+    if snapshot.speed_mps > 0.1 \
+        || snapshot.position_xz.distance_to(
+            service_coordinator.network.get_station_stop("north_gate").position_xz
+        ) > 1.0:
+        service_mode_message = "Restart blocked: shuttle must be stopped at North Gate."
+        return {"valid": false, "failure_reason": "restart_pose_not_at_service_station"}
+
+    var replacement = CampusServiceCoordinator.new()
+    replacement.dynamics.max_acceleration = service_coordinator.dynamics.max_acceleration
+    replacement.dynamics.max_braking = service_coordinator.dynamics.max_braking
+    replacement.dynamics.max_speed = service_coordinator.dynamics.max_speed
+    var initialized: Dictionary = replacement.initialize_service(
+        "north_gate",
+        snapshot.position_xz,
+        snapshot.heading_rad
+    )
+    if not initialized.get("valid", false):
+        service_mode_message = "Restart failed: %s" % str(initialized.get("failure_reason", ""))
+        return initialized
+    service_coordinator = replacement
+    service_visual_leg = ""
+    service_mode_message = "Demo safely reinitialized at North Gate; no active booking was discarded."
+    _sync_passenger_service_visuals(service_coordinator.get_service_snapshot())
+    _update_passenger_service_hud(service_coordinator.get_service_snapshot())
+    return {"valid": true, "failure_reason": ""}
+
+func _can_leave_passenger_service() -> bool:
+    if not passenger_service_mode:
+        return true
+    if service_coordinator == null:
+        service_mode_message = "Mode switch blocked: passenger service is not initialized."
+        return false
+    var snapshot: Dictionary = service_coordinator.get_service_snapshot()
+    if snapshot.service_state != "IDLE" \
+        || service_coordinator.dispatcher.has_active_booking():
+        service_mode_message = (
+            "Mode switch blocked: complete the passenger journey and return to North Gate first."
+        )
+        return false
+    return true
+
+func _leave_passenger_service_mode() -> void:
+    if not passenger_service_mode:
+        return
+    passenger_service_mode = false
+    service_mode_message = ""
+    if service_road_root:
+        service_road_root.visible = false
+    if service_route_map:
+        service_route_map.visible = false
+
+func _update_legacy_hud_message() -> void:
+    if not hud_label || service_mode_message.is_empty():
+        return
+    if not hud_label.text.contains(service_mode_message):
+        hud_label.text += "\n" + service_mode_message
+
+func _physics_process_passenger_service(delta: float) -> void:
+    var key1_current: bool = Input.is_key_pressed(KEY_1)
+    if key1_current && not service_key1_pressed_last_frame:
+        if _can_leave_passenger_service():
+            _leave_passenger_service_mode()
+            select_blocked_road_mode()
+            return
+    service_key1_pressed_last_frame = key1_current
+
+    var key2_current: bool = Input.is_key_pressed(KEY_2)
+    if key2_current && not service_key2_pressed_last_frame:
+        if _can_leave_passenger_service():
+            _leave_passenger_service_mode()
+            select_clear_road_mode()
+            return
+    service_key2_pressed_last_frame = key2_current
+
+    var key3_current: bool = Input.is_key_pressed(KEY_3)
+    if key3_current && not key3_pressed_last_frame:
+        if _can_leave_passenger_service():
+            _leave_passenger_service_mode()
+            toggle_steering_test_mode()
+            return
+    key3_pressed_last_frame = key3_current
+
+    var key4_current: bool = Input.is_key_pressed(KEY_4)
+    if key4_press_edge(key4_current):
+        if _can_leave_passenger_service():
+            _leave_passenger_service_mode()
+            select_route_following_mode()
+            return
+
+    var booking_key_current: bool = Input.is_key_pressed(KEY_B)
+    if booking_key_current && not service_booking_key_pressed_last_frame:
+        request_service_demo_booking()
+    service_booking_key_pressed_last_frame = booking_key_current
+
+    var boarding_key_current: bool = Input.is_key_pressed(KEY_E)
+    if boarding_key_current && not service_boarding_key_pressed_last_frame:
+        confirm_service_demo_boarding()
+    service_boarding_key_pressed_last_frame = boarding_key_current
+
+    var exit_key_current: bool = Input.is_key_pressed(KEY_X)
+    if exit_key_current && not service_exit_key_pressed_last_frame:
+        confirm_service_demo_exit()
+    service_exit_key_pressed_last_frame = exit_key_current
+
+    var reset_key_current: bool = Input.is_key_pressed(KEY_R)
+    if reset_key_current && not service_reset_key_pressed_last_frame:
+        restart_service_demo()
+    service_reset_key_pressed_last_frame = reset_key_current
+
+    _advance_passenger_service(delta)
+
+func _advance_passenger_service(delta: float, physics_tick_id: int = -1) -> Dictionary:
+    if not passenger_service_mode || service_coordinator == null:
+        return {"valid": false, "failure_reason": "passenger_service_mode_not_active"}
+    var result: Dictionary = service_coordinator.step(delta, physics_tick_id)
+    var snapshot: Dictionary = service_coordinator.get_service_snapshot()
+    _sync_passenger_service_visuals(snapshot, delta)
+    _update_passenger_service_hud(snapshot)
+    return result
+
+func _ensure_service_visuals(network: RefCounted) -> bool:
+    print("[MODE5 DIAG] Visual initialization started.")
+    if service_road_root == null:
+        service_road_root = Node3D.new()
+        service_road_root.name = "CampusServiceRoadNetwork"
+        add_child(service_road_root)
+
+        var road_material := _route_material(Color(0.16, 0.18, 0.2, 1.0))
+        var road_navigator = RouteNavigator.new()
+        for segment in network.get_segments():
+            var segment_points: Array[Vector2] = []
+            for point in segment.centerline_points:
+                segment_points.append(point)
+            if not road_navigator.set_route(segment_points, 12):
+                push_error("Could not render campus segment: " + str(segment.id))
+                continue
+            var road_instance := MeshInstance3D.new()
+            road_instance.name = "Road_" + str(segment.id)
+            road_instance.mesh = _make_route_strip_mesh(
+                road_navigator.get_centerline_samples(),
+                0.0,
+                7.0,
+                0.035
+            )
+            road_instance.material_override = road_material
+            service_road_root.add_child(road_instance)
+
+        service_active_route = MeshInstance3D.new()
+        service_active_route.name = "ActivePassengerRoute"
+        service_active_route.material_override = _route_material(Color(1.0, 0.62, 0.12, 1.0))
+        service_road_root.add_child(service_active_route)
+
+        var marker_material := _route_material(Color(0.08, 0.66, 0.84, 1.0))
+        for station in network.get_stations():
+            var marker_mesh := CylinderMesh.new()
+            marker_mesh.top_radius = 1.8
+            marker_mesh.bottom_radius = 1.8
+            marker_mesh.height = 0.16
+            var marker := MeshInstance3D.new()
+            marker.name = "StationMarker_" + str(station.id)
+            marker.mesh = marker_mesh
+            marker.material_override = marker_material
+            marker.position = Vector3(
+                station.stop_position_xz.x,
+                0.12,
+                station.stop_position_xz.y
+            )
+            service_road_root.add_child(marker)
+
+            var station_label := Label3D.new()
+            station_label.name = "StationLabel_" + str(station.id)
+            station_label.text = str(station.display_name).replace(" Stop", "")
+            station_label.position = Vector3(
+                station.stop_position_xz.x,
+                1.5,
+                station.stop_position_xz.y
+            )
+            station_label.font_size = 36
+            station_label.outline_size = 8
+            station_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+            service_road_root.add_child(station_label)
+
+    service_road_root.visible = true
+    if service_route_map == null:
+        service_route_map = CampusRouteMap.new()
+        service_route_map.name = "CampusRouteMap"
+        canvas_layer.add_child(service_route_map)
+    service_route_map.configure(network)
+    var road_count: int = 0
+    var station_label_count: int = 0
+    for child in service_road_root.get_children():
+        if child.name.begins_with("Road_"):
+            road_count += 1
+        elif child.name.begins_with("StationLabel_"):
+            station_label_count += 1
+    var visuals_ready: bool = road_count == network.get_segment_ids().size() \
+        && station_label_count == network.get_station_ids().size() \
+        && service_active_route != null \
+        && service_route_map != null
+    if not visuals_ready:
+        push_error(
+            "[MODE5 DIAG] Visual initialization failure: roads=%d/%d stations=%d/%d route=%s map=%s"
+                % [
+                    road_count,
+                    network.get_segment_ids().size(),
+                    station_label_count,
+                    network.get_station_ids().size(),
+                    service_active_route != null,
+                    service_route_map != null
+                ]
+        )
+    return visuals_ready
+
+func _sync_passenger_service_visuals(snapshot: Dictionary, delta: float = 0.0) -> void:
+    if not passenger_service_mode || service_coordinator == null:
+        return
+    if ego_car:
+        var position_xz: Vector2 = snapshot.position_xz
+        ego_car.position = Vector3(position_xz.x, 0.4, position_xz.y)
+        ego_car.rotation.y = float(snapshot.heading_rad)
+    if follow_camera:
+        var position := Vector3(
+            snapshot.position_xz.x,
+            0.4,
+            snapshot.position_xz.y
+        )
+        _update_mode4_camera(position, float(snapshot.heading_rad), delta)
+
+    var active_leg: String = str(snapshot.current_leg)
+    if active_leg != service_visual_leg:
+        service_visual_leg = active_leg
+        var route_samples := PackedVector2Array()
+        if not active_leg.is_empty() && service_coordinator.navigator.route_valid:
+            route_samples = service_coordinator.navigator.get_centerline_samples()
+        if service_active_route:
+            service_active_route.mesh = _make_route_strip_mesh(
+                route_samples,
+                0.0,
+                0.55,
+                0.11
+            ) if route_samples.size() >= 2 else null
+        if service_route_map:
+            service_route_map.set_active_route(route_samples)
+
+func _update_passenger_service_hud(snapshot: Dictionary) -> void:
+    if not hud_label:
+        return
+    var booking: Dictionary = snapshot.get("active_booking", {})
+    var pickup_name: String = "—"
+    var destination_name: String = "—"
+    if not booking.is_empty():
+        pickup_name = _station_display_name(
+            service_coordinator.network,
+            str(booking.get("origin_station_id", ""))
+        )
+        destination_name = _station_display_name(
+            service_coordinator.network,
+            str(booking.get("destination_station_id", ""))
+        )
+    var service_status: String
+    if snapshot.get("blocked", false):
+        service_status = "BLOCKED — reservation retained"
+    elif not booking.is_empty():
+        service_status = "Occupied"
+    else:
+        service_status = "Available"
+
+    var journey_state: String = str(snapshot.get("service_state", "UNINITIALIZED"))
+    var state_label: String = _humanize_service_state(journey_state)
+    var waiting_text: String = ""
+    if journey_state == "BOARDING":
+        waiting_text = "Waiting for boarding confirmation at Sports Hall."
+    elif journey_state == "DROPOFF":
+        waiting_text = "Waiting for passenger exit confirmation at Innovation Centre."
+    elif journey_state == "BLOCKED":
+        waiting_text = "Journey blocked: %s" % _humanize_failure(
+            str(snapshot.get("blocked_reason", ""))
+        )
+
+    var arrival_text: String = "No station arrival certified."
+    if journey_state == "BOARDING":
+        arrival_text = "Sports Hall arrival certified."
+    elif journey_state == "DROPOFF":
+        arrival_text = "Innovation Centre arrival certified."
+    elif journey_state == "IDLE" && snapshot.get("arrival_certified", false):
+        arrival_text = "Return to North Gate certified."
+
+    var route_leg: String = str(snapshot.get("current_leg", ""))
+    route_leg = "Waiting" if route_leg.is_empty() else _humanize_route_leg(route_leg)
+    var target_id: String = str(snapshot.get("destination_station_id", ""))
+    var target_name: String = (
+        _station_display_name(service_coordinator.network, target_id)
+        if not target_id.is_empty()
+        else "—"
+    )
+    hud_label.text = (
+        "[MODE 5 — PASSENGER SERVICE DEMO]\n"
+        + "Service: %s | Journey: %s\n" % [service_status, state_label]
+        + "Booking: %s → %s\n" % [pickup_name, destination_name]
+        + "Route leg: %s | Target: %s\n" % [route_leg, target_name]
+        + "Shuttle speed: %.2f m/s\n" % float(snapshot.get("speed_mps", 0.0))
+        + "%s\n" % arrival_text
+        + "%s\n" % waiting_text
+        + "Legacy demo is suspended; only the service shuttle advances.\n"
+        + "Controls: [B] Request demo | [E] Board | [X] Passenger exit\n"
+        + "[R] Restart only when available | [1–4] Leave after return | [WASD] disabled"
+    )
+    if not service_mode_message.is_empty():
+        hud_label.text += "\n" + service_mode_message
+
+func _station_display_name(network: RefCounted, station_id: String) -> String:
+    if network == null || station_id.is_empty():
+        return "—"
+    var station: Dictionary = network.get_station(station_id)
+    return str(station.get("display_name", station_id)).replace(" Stop", "")
+
+func _humanize_service_state(state: String) -> String:
+    match state:
+        "IDLE":
+            return "Ready / available"
+        "ASSIGNED":
+            return "Booking accepted"
+        "TO_PICKUP":
+            return "Driving to pickup"
+        "BOARDING":
+            return "At pickup — waiting to board"
+        "TO_DESTINATION":
+            return "Driving to destination"
+        "DROPOFF":
+            return "At destination — waiting for exit"
+        "RETURNING_TO_SERVICE":
+            return "Returning to North Gate"
+        "BLOCKED":
+            return "Blocked — reservation retained"
+    return state.replace("_", " ").capitalize()
+
+func _humanize_route_leg(leg: String) -> String:
+    match leg:
+        "pickup":
+            return "Pickup"
+        "destination":
+            return "Passenger destination"
+        "return":
+            return "Service return"
+    return leg.capitalize()
+
+func _humanize_failure(reason: String) -> String:
+    return reason.replace("_", " ").capitalize()
 
 func _route_waypoints() -> Array[Vector2]:
     if route_variant == ROUTE_LEFT:
@@ -286,8 +824,35 @@ func key4_press_edge(is_pressed: bool) -> bool:
     key4_pressed_last_frame = is_pressed
     return just_pressed
 
+func _input(event: InputEvent) -> void:
+    if not event is InputEventKey || not event.pressed || event.echo:
+        return
+    var key_event: InputEventKey = event
+    if key_event.keycode != KEY_8 \
+        && key_event.physical_keycode != KEY_8 \
+        && key_event.keycode != KEY_KP_8 \
+        && key_event.physical_keycode != KEY_KP_8:
+        return
+    print(
+        "[MODE5 DIAG] Key 8 detected: keycode=%s physical_keycode=%s scene='%s' active=%s"
+            % [
+                OS.get_keycode_string(key_event.keycode),
+                OS.get_keycode_string(key_event.physical_keycode),
+                get_scene_file_path(),
+                passenger_service_mode
+            ]
+    )
+    if passenger_service_mode:
+        print("[MODE5 DIAG] Key 8 ignored: Mode 5 is already active.")
+        return
+    select_passenger_service_mode()
+
 func _physics_process(delta: float) -> void:
     # --- 1. Keyboard Controls & Mode Selection ---
+    if passenger_service_mode:
+        _physics_process_passenger_service(delta)
+        return
+
     if Input.is_key_pressed(KEY_1):
         select_blocked_road_mode()
     elif Input.is_key_pressed(KEY_2):
@@ -530,7 +1095,7 @@ func _physics_process(delta: float) -> void:
                 "Localization: %s | Navigation: %s\n" % [route_localization, route_status] + \
                 "Braking State: %s\n" % [braking_state] + \
                 "Route: %s | [5] Left | [6] Right | [7] S-Curve\n" % [route_variant] + \
-                "Controls: [1] Blocked | [2] Clear | [3] Steering Test | [4] Route Follow | [SPACE] Auto/Manual | [W/S] Drive/Brake | [A/D] Steer | [R] Reset"
+                "Controls: [1] Blocked | [2] Clear | [3] Steering Test | [4] Route Follow | [8] Passenger Demo | [SPACE] Auto/Manual | [W/S] Drive/Brake | [A/D] Steer | [R] Reset"
         elif steering_test_mode:
             hud_label.text = "[STEERING TEST - KINEMATIC DEMONSTRATION]\n" + \
                 "Not autonomous lane following; obstacle/AEB safety is not evaluated.\n" + \
@@ -541,7 +1106,7 @@ func _physics_process(delta: float) -> void:
                 "Speed: %.2f m/s (%.1f km/h) | Acceleration: %.2f m/s²\n" % [
                     state_speed, state_speed * 3.6, state_acceleration
                 ] + \
-                "Controls: [W/Up] Accelerate | [S/Down] Brake | [A] Left | [D] Right | [R] Reset | [3] Exit"
+                "Controls: [W/Up] Accelerate | [S/Down] Brake | [A] Left | [D] Right | [R] Reset | [3] Exit | [8] Passenger Demo"
         else:
             var scenario_name: String = "BLOCKED-ROAD (Obstacle at Z=60)" if scenario_blocked_road else "CLEAR-ROAD (Destination B at Z=100)"
             hud_label.text = "[EASY DRIVE GODOT DEMO]\n" + \
@@ -556,7 +1121,10 @@ func _physics_process(delta: float) -> void:
                 "Braking State: %s\n" % [braking_state] + \
                 "Destination Status: %s\n" % [contact_status] + \
                 "----------------------------------------\n" + \
-                "Controls: [1] Blocked-Road | [2] Clear-Road | [3] Steering Test | [4] Route Following | [SPACE] Auto/Man | [R] Reset"
+                "Controls: [1] Blocked-Road | [2] Clear-Road | [3] Steering Test | [4] Route Following | [8] Passenger Demo | [SPACE] Auto/Man | [R] Reset"
+
+        if not service_mode_message.is_empty():
+            hud_label.text += "\n" + service_mode_message
 
 func _update_mode4_camera(
     vehicle_position: Vector3,
