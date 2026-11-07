@@ -364,20 +364,56 @@ func _test_safe_blocking_failures() -> void:
 
     var route_failure_trip: Dictionary = _new_trip()
     var failed_route: Dictionary = route_failure_trip.booking_result.booking.routes.pickup
-    var failed_route_request: Dictionary = route_failure_trip.journey.request_next_route_installation(
-        _vehicle_at_route_start(failed_route)
+    _expect(
+        route_failure_trip.booking_result.valid
+            && route_failure_trip.assigned.valid
+            && route_failure_trip.journey.state == PassengerJourney.ASSIGNED,
+        "route-installation failure test has a valid assigned journey"
     )
-    if failed_route_request.valid:
-        var failed_confirmation: Dictionary = route_failure_trip.journey.confirm_route_installation(
-            failed_route_request.request_id,
-            {"installed": false}
-        )
-        _expect(
-            not failed_confirmation.valid
-                && route_failure_trip.journey.state == PassengerJourney.BLOCKED
-                && route_failure_trip.journey.blocked_reason == "route_installation_failed",
-            "external route installation failure safely blocks the journey"
-        )
+    if not route_failure_trip.booking_result.valid \
+        || not route_failure_trip.assigned.valid \
+        || route_failure_trip.journey.state != PassengerJourney.ASSIGNED:
+        return
+
+    var failed_route_vehicle: Dictionary = _vehicle_at_route_start(failed_route)
+    var original_failed_route_vehicle: Dictionary = failed_route_vehicle.duplicate(true)
+    var failed_route_request: Dictionary = route_failure_trip.journey.request_next_route_installation(
+        failed_route_vehicle
+    )
+    _expect(
+        failed_route_request.valid
+            && failed_route_request.get("leg", "") == "pickup"
+            && route_failure_trip.journey.state == PassengerJourney.ASSIGNED,
+        "route-installation failure test obtains a valid pickup install request"
+    )
+    if not failed_route_request.valid:
+        return
+
+    var failed_confirmation: Dictionary = route_failure_trip.journey.confirm_route_installation(
+        failed_route_request.request_id,
+        {"installed": false}
+    )
+    _expect(
+        not failed_confirmation.valid
+            && failed_confirmation.failure_reason == "route_installation_failed"
+            && route_failure_trip.journey.state == PassengerJourney.BLOCKED
+            && route_failure_trip.journey.blocked_reason == "route_installation_failed",
+        "external route installation rejection safely blocks the journey"
+    )
+    _expect(
+        route_failure_trip.journey.state != PassengerJourney.IDLE
+            && not failed_confirmation.get("arrival_certified", false)
+            && not failed_confirmation.get("arrived", false),
+        "rejected route installation cannot report arrival or return to IDLE"
+    )
+    _expect(
+        failed_route_vehicle == original_failed_route_vehicle,
+        "route installation rejection leaves the caller's vehicle pose unchanged"
+    )
+    _expect(
+        route_failure_trip.dispatcher.has_active_booking(),
+        "rejected route installation keeps the shuttle reservation occupied"
+    )
 
     var return_failure_dispatcher = ShuttleDispatcher.new(network)
     var booking := return_failure_dispatcher.request_booking("library", "sports_hall")
