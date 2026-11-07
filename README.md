@@ -25,3 +25,15 @@ scenario and a clear-road destination scenario.
 The simulation and scene are intentionally preserved from the committed
 Godot project baseline; this repository separation does not add driving
 features or redesign the vehicle.
+
+## Passenger service foundation
+
+The standalone `ShuttleDispatcher` and `PassengerJourney` scripts validate
+one booking at a time and model pickup, boarding, destination, drop-off, and
+return-to-service transitions. They are not integrated into the running scene.
+The dispatcher requires valid pickup, passenger, and return routes; the
+journey returns route-install requests for an external `RouteNavigator` caller
+and requires that caller to confirm installation without changing vehicle
+pose. Station arrival is accepted only with controller certification (or a
+validated stationary pickup), stop proximity, low speed, valid localization,
+and no manual intervention.
