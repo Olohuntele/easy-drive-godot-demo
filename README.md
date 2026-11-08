@@ -63,13 +63,23 @@ Mode 5 journey does not restart it. Its lightweight 3D roads are generated from
 The visualization does not certify road-width containment or physical lane
 keeping.
 
+The Mode 5 booking panel lists pickup and destination choices directly from
+`CampusNetwork`. It submits selected station IDs through
+`CampusServiceCoordinator.request_booking`; the dispatcher and coordinator
+remain authoritative for reservation and route acceptance. Identical stops
+are rejected with inline feedback, and new requests are disabled while a
+journey is active or blocked. The `B` shortcut remains available for the
+original Sports Hall-to-Innovation Centre demonstration booking. When a booking
+control has keyboard focus, simulation shortcuts are paused; press `Esc` to
+release focus and resume `B`, `E`, `X`, `R`, and mode shortcuts.
+
 ### Manual visual check
 
 1. Run the project in the Godot GUI and press `8` from any legacy mode, including while its shuttle is away from North Gate.
-2. Press `B` and watch the shuttle follow the highlighted route to Sports Hall.
-3. Confirm `E` is accepted only after the HUD says pickup arrival is certified.
-4. Watch the route highlight change; confirm the shuttle drives to Innovation Centre.
-5. Confirm `X` is accepted only after destination arrival is certified.
+2. Use the booking panel to choose different stops and request a shuttle; verify the selected pickup and destination appear in the HUD.
+3. Confirm a same-stop selection is rejected, and further requests are disabled while the booking is active.
+4. Confirm `E` is accepted only after the HUD says pickup arrival is certified.
+5. Confirm the shuttle drives to the selected destination and `X` is accepted only after certified arrival.
 6. Watch the return leg and verify the booking becomes available only at North Gate.
 7. Check the follow camera, campus road/map and station alignment, and continuity at route handoffs.
 8. Try `1`–`4` after the return; verify Modes 1–4 and the Mode 4 route variants still work.
