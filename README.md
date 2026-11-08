@@ -67,22 +67,30 @@ The Mode 5 booking panel lists pickup and destination choices directly from
 `CampusNetwork`. It submits selected station IDs through
 `CampusServiceCoordinator.request_booking`; the dispatcher and coordinator
 remain authoritative for reservation and route acceptance. Identical stops
-are rejected with inline feedback, and new requests are disabled while a
-journey is active or blocked. The `B` shortcut remains available for the
-original Sports Hall-to-Innovation Centre demonstration booking. When a booking
-control has keyboard focus, simulation shortcuts are paused; press `Esc` to
-release focus and resume `B`, `E`, `X`, `R`, and mode shortcuts.
+are rejected with inline feedback. After acceptance, the same panel shows the
+selected trip, coordinator-reported journey stage, and progress through pickup,
+boarding, destination, exit, and return. Board Shuttle and Exit Shuttle appear
+only when the coordinator snapshot reports the matching certified arrival;
+they call the existing coordinator confirmation APIs. The booking form returns
+after the certified service return makes the shuttle idle and available.
+The same buttons supplement, rather than replace, the existing `E` boarding
+and `X` exit shortcuts.
+
+The `B` shortcut remains available for the original Sports Hall-to-Innovation
+Centre demonstration booking. When a booking control has keyboard focus,
+simulation shortcuts are paused; press `Esc` to release focus and resume `B`,
+`E`, `X`, `R`, and mode shortcuts.
 
 ### Manual visual check
 
 1. Run the project in the Godot GUI and press `8` from any legacy mode, including while its shuttle is away from North Gate.
-2. Use the booking panel to choose different stops and request a shuttle; verify the selected pickup and destination appear in the HUD.
-3. Confirm a same-stop selection is rejected, and further requests are disabled while the booking is active.
-4. Confirm `E` is accepted only after the HUD says pickup arrival is certified.
-5. Confirm the shuttle drives to the selected destination and `X` is accepted only after certified arrival.
-6. Watch the return leg and verify the booking becomes available only at North Gate.
-7. Check the follow camera, campus road/map and station alignment, and continuity at route handoffs.
-8. Try `1`–`4` after the return; verify Modes 1–4 and the Mode 4 route variants still work.
+2. Choose different stops and request a shuttle; confirm the panel switches to journey tracking and shows the selected trip.
+3. Check that progress/status update as the shuttle travels to pickup, waits for boarding, travels to destination, waits for exit, and returns.
+4. Confirm Board Shuttle appears only at certified pickup arrival; click it and verify destination travel begins.
+5. Confirm Exit Shuttle appears only at certified destination arrival; click it and verify the shuttle returns to service.
+6. Verify the booking form returns only after certified North Gate return and availability.
+7. Try both Sports Hall → Innovation Centre and Library → North Gate; check camera tracking, map/station alignment, and route handoff continuity.
+8. Check `B`, `E`, `X`, and `R`, then try `1`–`4`; verify the existing shortcuts and Modes 1–4 remain functional.
 
 ## Passenger service foundation
 

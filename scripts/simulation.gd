@@ -317,8 +317,11 @@ func confirm_service_demo_boarding() -> Dictionary:
             str(result.get("failure_reason", ""))
         )
     )
-    _sync_passenger_service_visuals(service_coordinator.get_service_snapshot())
-    _update_passenger_service_hud(service_coordinator.get_service_snapshot())
+    var snapshot: Dictionary = service_coordinator.get_service_snapshot()
+    _sync_passenger_service_visuals(snapshot)
+    _update_passenger_service_hud(snapshot)
+    if booking_panel:
+        booking_panel.show_action_result("boarding", result, snapshot)
     return result
 
 func confirm_service_demo_exit() -> Dictionary:
@@ -332,8 +335,11 @@ func confirm_service_demo_exit() -> Dictionary:
             str(result.get("failure_reason", ""))
         )
     )
-    _sync_passenger_service_visuals(service_coordinator.get_service_snapshot())
-    _update_passenger_service_hud(service_coordinator.get_service_snapshot())
+    var snapshot: Dictionary = service_coordinator.get_service_snapshot()
+    _sync_passenger_service_visuals(snapshot)
+    _update_passenger_service_hud(snapshot)
+    if booking_panel:
+        booking_panel.show_action_result("exit", result, snapshot)
     return result
 
 func restart_service_demo() -> Dictionary:
@@ -549,6 +555,8 @@ func _ensure_service_visuals(network: RefCounted) -> bool:
         canvas_layer.add_child(booking_panel)
         booking_panel.configure(network, service_coordinator.get_service_snapshot())
         booking_panel.booking_requested.connect(_on_passenger_booking_requested)
+        booking_panel.boarding_requested.connect(_on_passenger_boarding_requested)
+        booking_panel.passenger_exit_requested.connect(_on_passenger_exit_requested)
     booking_panel.visible = false
     var road_count: int = 0
     var station_label_count: int = 0
@@ -668,7 +676,7 @@ func _update_passenger_service_hud(snapshot: Dictionary) -> void:
         + "%s\n" % arrival_text
         + "%s\n" % waiting_text
         + "Legacy demo is suspended; only the service shuttle advances.\n"
-        + "Controls: [B] Request demo | [E] Board | [X] Passenger exit\n"
+        + "Controls: [B] Request demo | Panel Board/Exit or [E]/[X]\n"
         + "[R] Restart only when available | [1–4] Leave after return | [WASD] disabled"
     )
     if not service_mode_message.is_empty():
@@ -888,6 +896,12 @@ func _on_passenger_booking_requested(
     destination_station_id: String
 ) -> void:
     request_passenger_booking(pickup_station_id, destination_station_id)
+
+func _on_passenger_boarding_requested() -> void:
+    confirm_service_demo_boarding()
+
+func _on_passenger_exit_requested() -> void:
+    confirm_service_demo_exit()
 
 func _physics_process(delta: float) -> void:
     # --- 1. Keyboard Controls & Mode Selection ---
