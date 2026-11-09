@@ -1,4 +1,4 @@
-﻿extends Node3D
+extends Node3D
 
 const CampusMultiRouteNetwork = preload("res://scripts/campus_multi_route_network.gd")
 const CampusRoutePlanner = preload("res://scripts/campus_route_planner.gd")
@@ -73,6 +73,9 @@ var route_active: bool = false
 var current_route_name: String = ""
 var current_route_segments: PackedStringArray = PackedStringArray()
 
+var overview_camera: Camera3D = null
+var camera_mode_overview: bool = true
+
 @onready var ego_car: Node3D = $EgoCar
 @onready var follow_camera: Camera3D = $FollowCamera
 @onready var hud_label: Label = $CanvasLayer/TelemetryPanel/HUD
@@ -87,7 +90,7 @@ func _ready() -> void:
 
     _build_network_visuals()
     _select_route(1)
-    print("[MULTI-ROUTE DEMO] Initialized successfully. Press 1-4 to select routes, Space to toggle run, R to reset.")
+    print("[MULTI-ROUTE DEMO] Initialized successfully. Press 1-4 to select routes, Space to toggle run, R to reset, C to toggle camera.")
 
 func _input(event: InputEvent) -> void:
     if event is InputEventKey and event.pressed and not event.echo:
@@ -100,6 +103,8 @@ func _input(event: InputEvent) -> void:
                 _select_route(3)
             KEY_4, KEY_KP_4:
                 _select_route(4)
+            KEY_C:
+                _toggle_camera()
             KEY_R:
                 _select_route(active_route_index)
             KEY_SPACE:
@@ -185,26 +190,112 @@ func _select_route(index: int) -> void:
     controller.reset()
     route_active = true
     simulation_running = true
+    _update_active_route_visuals()
     print("[MULTI-ROUTE DEMO] Selected Route %d: %s (Segments: [%s])" % [index, current_route_name, ", ".join(current_route_segments)])
 
+var active_route_mesh_instance: MeshInstance3D = null
+
 func _build_network_visuals() -> void:
-    var line_mat = StandardMaterial3D.new()
-    line_mat.albedo_color = Color(0.95, 0.95, 0.95, 1.0)
+    # 1. Calculate bounding box for overview camera and layout
+    var min_x: float = INF
+    var max_x: float = -INF
+    var min_z: float = INF
+    var max_z: float = -INF
+
+    for node in network.get_nodes():
+        var p: Vector2 = node.position_xz
+        min_x = minf(min_x, p.x)
+        max_x = maxf(max_x, p.x)
+        min_z = minf(min_z, p.y)
+        max_z = maxf(max_z, p.y)
+
+    for segment in network.get_segments():
+        for pt in segment.centerline_points:
+            min_x = minf(min_x, pt.x)
+            max_x = maxf(max_x, pt.x)
+            min_z = minf(min_z, pt.y)
+            max_z = maxf(max_z, pt.y)
+
+    var center_x: float = (min_x + max_x) * 0.5
+    var center_z: float = (min_z + max_z) * 0.5
+    var span_x: float = max_x - min_x
+    var span_z: float = max_z - min_z
+    var max_span: float = maxf(span_x, span_z)
+
+    # Setup overview camera framing the entire network (added to tree FIRST, then set current)
+    overview_camera = Camera3D.new()
+    overview_camera.name = "OverviewCamera"
+    var overview_height: float = maxf(60.0, max_span * 1.1)
+    overview_camera.position = Vector3(center_x, overview_height, center_z + max_span * 0.2)
+    add_child(overview_camera)
+    overview_camera.look_at(Vector3(center_x, 0.0, center_z), Vector3.UP)
+    overview_camera.current = true
+    camera_mode_overview = true
+
+    # 2. Appropriately sized junction connection plates (radius 2.0m matching road half-width, CULL_DISABLED)
+    var junction_mat = StandardMaterial3D.new()
+    junction_mat.albedo_color = Color(0.16, 0.18, 0.20, 1.0)
+    junction_mat.roughness = 0.8
+    junction_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+
+    for node in network.get_nodes():
+        var pos: Vector2 = node.position_xz
+        var cyl = MeshInstance3D.new()
+        var cyl_mesh = CylinderMesh.new()
+        cyl_mesh.top_radius = 2.0
+        cyl_mesh.bottom_radius = 2.0
+        cyl_mesh.height = 0.02
+        cyl.mesh = cyl_mesh
+        cyl.material_override = junction_mat
+        cyl.position = Vector3(pos.x, 0.015, pos.y)
+        road_root.add_child(cyl)
+
+    # 3. Asphalt road segments (4.0m width) with edge markings and centerline (CULL_DISABLED)
+    var asphalt_mat = StandardMaterial3D.new()
+    asphalt_mat.albedo_color = Color(0.18, 0.20, 0.22, 1.0)
+    asphalt_mat.roughness = 0.8
+    asphalt_mat.metallic = 0.05
+    asphalt_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+
+    var marking_mat = StandardMaterial3D.new()
+    marking_mat.albedo_color = Color(0.95, 0.95, 0.95, 1.0)
+    marking_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+    marking_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 
     for segment in network.get_segments():
         var points: Array = segment.centerline_points
         if points.size() < 2:
             continue
-        var immediate_mesh = ImmediateMesh.new()
-        immediate_mesh.surface_begin(Mesh.PRIMITIVE_LINE_STRIP, line_mat)
-        for pt in points:
-            immediate_mesh.surface_add_vertex(Vector3(pt.x, 0.05, pt.y))
-        immediate_mesh.surface_end()
 
-        var mesh_instance = MeshInstance3D.new()
-        mesh_instance.mesh = immediate_mesh
-        road_root.add_child(mesh_instance)
+        # Road surface (4.0m total width, half-width 2.0m)
+        var road_mesh = _make_route_strip_mesh(points, 0.0, 4.0, 0.025)
+        var road_instance = MeshInstance3D.new()
+        road_instance.mesh = road_mesh
+        road_instance.material_override = asphalt_mat
+        road_root.add_child(road_instance)
 
+        # Centerline marking (white strip, 0.15m width)
+        var center_marking = _make_route_strip_mesh(points, 0.0, 0.15, 0.035)
+        var center_inst = MeshInstance3D.new()
+        center_inst.mesh = center_marking
+        center_inst.material_override = marking_mat
+        road_root.add_child(center_inst)
+
+        # Left edge shoulder line (0.1m width at offset -1.9m)
+        var left_edge = _make_route_strip_mesh(points, -1.9, 0.1, 0.035)
+        var left_inst = MeshInstance3D.new()
+        left_inst.mesh = left_edge
+        left_inst.material_override = marking_mat
+        road_root.add_child(left_inst)
+
+        # Right edge shoulder line (0.1m width at offset +1.9m)
+        var right_edge = _make_route_strip_mesh(points, 1.9, 0.1, 0.035)
+        var right_inst = MeshInstance3D.new()
+        right_inst.mesh = right_edge
+        right_inst.material_override = marking_mat
+        road_root.add_child(right_inst)
+
+    # 4. Station markers and readable Label3Ds
     for station in network.get_stations():
         var pos: Vector2 = station.stop_position_xz
         var cyl = MeshInstance3D.new()
@@ -214,13 +305,102 @@ func _build_network_visuals() -> void:
         cyl_mesh.height = 0.2
         var cyl_mat = StandardMaterial3D.new()
         cyl_mat.albedo_color = Color(0.1, 0.6, 0.9, 1.0)
+        cyl_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
         cyl_mesh.material = cyl_mat
         cyl.mesh = cyl_mesh
         cyl.position = Vector3(pos.x, 0.1, pos.y)
         station_root.add_child(cyl)
 
+        var label = Label3D.new()
+        label.text = str(station.display_name).replace(" Stop", "")
+        label.position = Vector3(pos.x, 2.5, pos.y)
+        label.font_size = 36
+        label.outline_size = 8
+        label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+        station_root.add_child(label)
+
+func _toggle_camera() -> void:
+    camera_mode_overview = !camera_mode_overview
+    if camera_mode_overview:
+        if overview_camera:
+            overview_camera.current = true
+        print("[MULTI-ROUTE DEMO] Switched to Overview Camera")
+    else:
+        if follow_camera:
+            follow_camera.current = true
+        print("[MULTI-ROUTE DEMO] Switched to Follow Camera")
+
+func _update_active_route_visuals() -> void:
+    if active_route_mesh_instance == null:
+        active_route_mesh_instance = MeshInstance3D.new()
+        active_route_mesh_instance.name = "ActiveRouteHighlight"
+        var active_mat = StandardMaterial3D.new()
+        active_mat.albedo_color = Color(1.0, 0.65, 0.15, 0.85)
+        active_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+        active_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+        active_route_mesh_instance.material_override = active_mat
+        road_root.add_child(active_route_mesh_instance)
+
+    var combined_points: Array[Vector2] = []
+    for seg_id in current_route_segments:
+        var seg = network.get_segment(seg_id)
+        if not seg.is_empty():
+            for pt in seg.centerline_points:
+                if combined_points.is_empty() or combined_points[combined_points.size() - 1].distance_to(pt) > 0.01:
+                    combined_points.append(pt)
+
+    if combined_points.size() >= 2:
+        active_route_mesh_instance.mesh = _make_route_strip_mesh(combined_points, 0.0, 1.2, 0.045)
+        active_route_mesh_instance.visible = true
+    else:
+        active_route_mesh_instance.visible = false
+
+func _make_route_strip_mesh(
+    centerline_samples: Array,
+    lateral_offset_m: float,
+    strip_width_m: float,
+    height_m: float
+) -> ArrayMesh:
+    var vertices := PackedVector3Array()
+    var normals := PackedVector3Array()
+    var indices := PackedInt32Array()
+    var half_strip_width: float = strip_width_m * 0.5
+    for sample_index in range(centerline_samples.size()):
+        var previous_index: int = maxi(sample_index - 1, 0)
+        var next_index: int = mini(sample_index + 1, centerline_samples.size() - 1)
+        var tangent: Vector2 = (
+            centerline_samples[next_index] - centerline_samples[previous_index]
+        ).normalized()
+        if tangent.length_squared() < 0.0001:
+            tangent = Vector2(0, 1)
+        var right: Vector2 = Vector2(tangent.y, -tangent.x)
+        var center: Vector2 = centerline_samples[sample_index] + right * lateral_offset_m
+        var left_edge: Vector2 = center - right * half_strip_width
+        var right_edge: Vector2 = center + right * half_strip_width
+        vertices.append(Vector3(left_edge.x, height_m, left_edge.y))
+        vertices.append(Vector3(right_edge.x, height_m, right_edge.y))
+        normals.append(Vector3.UP)
+        normals.append(Vector3.UP)
+        if sample_index > 0:
+            var base: int = (sample_index - 1) * 2
+            indices.append_array(PackedInt32Array([
+                base, base + 2, base + 1,
+                base + 1, base + 2, base + 3
+            ]))
+
+    var arrays: Array = []
+    arrays.resize(Mesh.ARRAY_MAX)
+    arrays[Mesh.ARRAY_VERTEX] = vertices
+    arrays[Mesh.ARRAY_NORMAL] = normals
+    arrays[Mesh.ARRAY_INDEX] = indices
+    var mesh := ArrayMesh.new()
+    mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+    return mesh
+
 func _update_camera(delta: float) -> void:
-    if not ego_car:
+    if camera_mode_overview:
+        return
+    if not ego_car or not follow_camera:
         return
     var target_pos = ego_car.position + Vector3(0.0, 4.0, -10.0)
     follow_camera.position = follow_camera.position.lerp(target_pos, delta * 5.0)
@@ -232,24 +412,25 @@ func _update_hud() -> void:
     var status_str = "RUNNING" if simulation_running else "PAUSED"
     if not route_active:
         status_str = "ARRIVED / STOPPED"
+    var cam_str = "OVERVIEW" if camera_mode_overview else "FOLLOW"
     var total_len: float = navigator.total_length_m if navigator else 0.0
     var text = (
-        "EASY DRIVE — MULTI-ROUTE DEMO (Phase 5A.3A)\n"
-        + "Status: %s | Active Route: [%d] %s\n"
+        "EASY DRIVE — MULTI-ROUTE DEMO (Phase 5A.3B.1B)\n"
+        + "Status: %s | Camera: %s | Route: [%d] %s\n"
         + "Segments: [%s]\n"
-        + "Speed: %.2f m/s | Total Route Length: %.1f m\n"
+        + "Speed: %.2f m/s | Total Length: %.1f m\n"
         + "CONTROLS:\n"
-        + "  [1] North Gate -> Library (Original Ring)\n"
-        + "  [2] North Gate -> Library (Bypass Left)\n"
-        + "  [3] North Gate -> Library (Bypass Right)\n"
+        + "  [1]-[3] North Gate -> Library (Ring/Bypasses)\n"
         + "  [4] Library -> Innovation Centre (Bypass)\n"
-        + "  [Space] Toggle Pause | [R] Reset Route"
+        + "  [C] Toggle Camera (%s) | [Space] Pause | [R] Reset"
     ) % [
         status_str,
+        cam_str,
         active_route_index,
         current_route_name,
         ", ".join(current_route_segments),
         dynamics.speed_mps,
-        total_len
+        total_len,
+        "Overview" if camera_mode_overview else "Follow"
     ]
     hud_label.text = text
