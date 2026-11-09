@@ -98,16 +98,16 @@ transform = Transform3D(1, 0, 0, 0, 0.866025, 0.5, 0, -0.5, 0.866025, 0, 6, -10)
 [node name="TelemetryPanel" type="Panel" parent="CanvasLayer"]
 offset_left = 20.0
 offset_top = 20.0
-offset_right = 540.0
-offset_bottom = 260.0
+offset_right = 440.0
+offset_bottom = 175.0
 theme_override_styles/panel = SubResource("StyleBoxFlat_panel")
 
 [node name="HUD" type="Label" parent="CanvasLayer/TelemetryPanel"]
 layout_mode = 0
-offset_left = 15.0
-offset_top = 15.0
-offset_right = 505.0
-offset_bottom = 245.0
+offset_left = 12.0
+offset_top = 10.0
+offset_right = 428.0
+offset_bottom = 165.0
 theme_override_colors/font_color = Color(0.9, 0.95, 1, 1)
-theme_override_font_sizes/font_size = 12
-text = "EASY DRIVE — MULTI-ROUTE DEMO"
+theme_override_font_sizes/font_size = 11
+text = "EASY DRIVE — CAMPUS MULTI-ROUTE DEMO"

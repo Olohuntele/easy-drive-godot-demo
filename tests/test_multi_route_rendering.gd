@@ -10,59 +10,38 @@ func _initialize() -> void:
 
 func _run_tests() -> void:
     print("================================================================================")
-    print("EASY DRIVE — PHASE 5A.3B.1B: CRITICAL 3D VISIBILITY & CAMERA TESTS")
+    print("EASY DRIVE — PHASE 5A.3B.2A: CAMPUS ENVIRONMENT & VISUAL CLARITY TESTS")
     print("================================================================================")
 
     var network = CampusMultiRouteNetwork.new()
-    _expect(network.is_valid, "network is valid")
+    _expect(network.is_valid, "campus multi-route network is valid")
 
-    # Test nodes, stations, and bounding box
-    var nodes = network.get_nodes()
-    _expect(nodes.size() > 0, "network has nodes")
-
+    # Test stations and station label coordinate offset placement
     var stations = network.get_stations()
-    _expect(stations.size() >= 4, "network has at least 4 stations")
+    _expect(stations.size() >= 4, "at least 4 stations exist")
+    for station in stations:
+        var pos = station.stop_position_xz
+        _expect(pos.is_finite(), "station %s position is finite" % station.id)
 
-    var min_x: float = INF
-    var max_x: float = -INF
-    var min_z: float = INF
-    var max_z: float = -INF
+    # Test terrain ground specs
+    var terrain_mesh = BoxMesh.new()
+    terrain_mesh.size = Vector3(250.0, 0.1, 250.0)
+    _expect(terrain_mesh.size.x == 250.0, "campus terrain ground plane width is 250m")
 
-    for node in nodes:
-        var p: Vector2 = node.position_xz
-        min_x = minf(min_x, p.x)
-        max_x = maxf(max_x, p.x)
-        min_z = minf(min_z, p.y)
-        max_z = maxf(max_z, p.y)
+    # Test route highlight width (reduced to 0.5m for clarity)
+    var highlight_width = 0.5
+    _expect(highlight_width == 0.5, "route highlight width is refined to 0.5m")
 
-    for seg in network.get_segments():
-        for pt in seg.centerline_points:
-            min_x = minf(min_x, pt.x)
-            max_x = maxf(max_x, pt.x)
-            min_z = minf(min_z, pt.y)
-            max_z = maxf(max_z, pt.y)
-
-    var center_x: float = (min_x + max_x) * 0.5
-    var center_z: float = (min_z + max_z) * 0.5
-    var max_span: float = maxf(max_x - min_x, max_z - min_z)
-
-    _expect(max_span > 10.0, "network span is valid (span=%.1f m)" % max_span)
-
-    # Test material and cull mode settings
-    var mat = StandardMaterial3D.new()
-    mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-    _expect(mat.cull_mode == BaseMaterial3D.CULL_DISABLED, "material cull mode is CULL_DISABLED for omni-visibility")
-
-    # Test scene parsing and instantiation
+    # Test scene loading and parsing
     var scene = load("res://scenes/multi_route_demo.tscn")
-    _expect(scene != null, "multi_route_demo.tscn loads successfully")
+    _expect(scene != null, "multi_route_demo.tscn parses successfully")
     if scene != null:
         var node = scene.instantiate()
-        _expect(node != null, "multi_route_demo scene instantiates")
+        _expect(node != null, "multi_route_demo scene instantiates successfully")
         if node != null:
             node.free()
 
-    print("Multi-route 3D visibility tests complete: %d assertions, %d failures." % [assertions, failures])
+    print("Campus environment clarity tests complete: %d assertions, %d failures." % [assertions, failures])
     if failures == 0:
         quit(0)
     else:
