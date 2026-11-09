@@ -234,7 +234,7 @@ func _build_network_visuals() -> void:
 
     # 2. Lightweight Green Campus Terrain Surface
     var terrain_mesh = BoxMesh.new()
-    terrain_mesh.size = Vector3(250.0, 0.1, 250.0)
+    terrain_mesh.size = Vector3(300.0, 0.1, 300.0)
     var terrain_inst = MeshInstance3D.new()
     terrain_inst.mesh = terrain_mesh
     var terrain_mat = StandardMaterial3D.new()
@@ -263,7 +263,7 @@ func _build_network_visuals() -> void:
         cyl.position = Vector3(pos.x, 0.015, pos.y)
         road_root.add_child(cyl)
 
-    # 4. Asphalt road segments (4.0m width) with edge markings and centerline (CULL_DISABLED)
+    # 4. Asphalt road segments (4.0m width) with clean centerline markings only (no overlapping edge lines)
     var asphalt_mat = StandardMaterial3D.new()
     asphalt_mat.albedo_color = Color(0.18, 0.20, 0.22, 1.0)
     asphalt_mat.roughness = 0.8
@@ -287,34 +287,20 @@ func _build_network_visuals() -> void:
         road_instance.material_override = asphalt_mat
         road_root.add_child(road_instance)
 
-        # Centerline marking (white strip, 0.15m width)
+        # Centerline marking (clean single white strip, 0.15m width)
         var center_marking = _make_route_strip_mesh(points, 0.0, 0.15, 0.035)
         var center_inst = MeshInstance3D.new()
         center_inst.mesh = center_marking
         center_inst.material_override = marking_mat
         road_root.add_child(center_inst)
 
-        # Left edge shoulder line (0.1m width at offset -1.9m)
-        var left_edge = _make_route_strip_mesh(points, -1.9, 0.1, 0.035)
-        var left_inst = MeshInstance3D.new()
-        left_inst.mesh = left_edge
-        left_inst.material_override = marking_mat
-        road_root.add_child(left_inst)
-
-        # Right edge shoulder line (0.1m width at offset +1.9m)
-        var right_edge = _make_route_strip_mesh(points, 1.9, 0.1, 0.035)
-        var right_inst = MeshInstance3D.new()
-        right_inst.mesh = right_edge
-        right_inst.material_override = marking_mat
-        road_root.add_child(right_inst)
-
-    # 5. Station markers and readable Label3Ds positioned beside stations (offset so they don't block roads)
+    # 5. Station markers and readable Label3Ds positioned clearly above shelters
     for station in network.get_stations():
         var pos: Vector2 = station.stop_position_xz
         var cyl = MeshInstance3D.new()
         var cyl_mesh = CylinderMesh.new()
-        cyl_mesh.top_radius = 1.5
-        cyl_mesh.bottom_radius = 1.5
+        cyl_mesh.top_radius = 1.4
+        cyl_mesh.bottom_radius = 1.4
         cyl_mesh.height = 0.15
         var cyl_mat = StandardMaterial3D.new()
         cyl_mat.albedo_color = Color(0.1, 0.65, 0.95, 1.0)
@@ -326,11 +312,143 @@ func _build_network_visuals() -> void:
 
         var label = Label3D.new()
         label.text = str(station.display_name).replace(" Stop", "")
-        label.position = Vector3(pos.x + 2.5, 2.4, pos.y + 2.5)
+        label.position = Vector3(pos.x + 2.5, 3.2, pos.y + 2.5)
         label.font_size = 32
         label.outline_size = 8
         label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
         station_root.add_child(label)
+
+    # 6. Campus Scenery & Station Infrastructure (Pushed outward for optimal clearance)
+    _build_campus_scenery()
+
+func _build_campus_scenery() -> void:
+    var scenery_root = Node3D.new()
+    scenery_root.name = "CampusScenery"
+    road_root.add_child(scenery_root)
+
+    # A. Four Campus Buildings (pushed further back to avoid crowding Follow mode)
+    var bldgs = [
+        {"pos": Vector3(0.0, 3.0, -22.0), "size": Vector3(14.0, 6.0, 8.0), "color": Color(0.72, 0.76, 0.82, 1.0), "name": "North Gate Admin"},
+        {"pos": Vector3(68.0, 3.5, 68.0), "size": Vector3(16.0, 7.0, 12.0), "color": Color(0.82, 0.68, 0.52, 1.0), "name": "University Library"},
+        {"pos": Vector3(-16.0, 3.2, 108.0), "size": Vector3(18.0, 6.0, 14.0), "color": Color(0.52, 0.62, 0.76, 1.0), "name": "Sports Hall"},
+        {"pos": Vector3(-68.0, 4.0, 68.0), "size": Vector3(14.0, 8.0, 12.0), "color": Color(0.42, 0.72, 0.86, 1.0), "name": "Innovation Hub"}
+    ]
+
+    for b in bldgs:
+        var box = MeshInstance3D.new()
+        var bmesh = BoxMesh.new()
+        bmesh.size = b.size
+        box.mesh = bmesh
+        var bmat = StandardMaterial3D.new()
+        bmat.albedo_color = b.color
+        bmat.roughness = 0.6
+        bmat.cull_mode = BaseMaterial3D.CULL_DISABLED
+        box.material_override = bmat
+        box.position = b.pos
+        scenery_root.add_child(box)
+
+        var blabel = Label3D.new()
+        blabel.text = b.name
+        blabel.position = Vector3(b.pos.x, b.pos.y + (b.size.y * 0.5) + 1.0, b.pos.z)
+        blabel.font_size = 28
+        blabel.outline_size = 6
+        blabel.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+        scenery_root.add_child(blabel)
+
+    # B. Station Waiting Shelters & Walkways (distinct contrast and geometry)
+    for station in network.get_stations():
+        var pos: Vector2 = station.stop_position_xz
+        var shelter_pos = Vector3(pos.x + 3.5, 0.0, pos.y + 3.5)
+
+        # Shelter roof (contrast roof)
+        var roof = MeshInstance3D.new()
+        var rmesh = BoxMesh.new()
+        rmesh.size = Vector3(3.2, 0.18, 2.2)
+        roof.mesh = rmesh
+        var rmat = StandardMaterial3D.new()
+        rmat.albedo_color = Color(0.22, 0.28, 0.35, 1.0)
+        rmat.cull_mode = BaseMaterial3D.CULL_DISABLED
+        roof.material_override = rmat
+        roof.position = shelter_pos + Vector3(0.0, 2.4, 0.0)
+        scenery_root.add_child(roof)
+
+        # Shelter supports (4 posts)
+        for dx in [-1.4, 1.4]:
+            for dz in [-0.9, 0.9]:
+                var post = MeshInstance3D.new()
+                var pmesh = CylinderMesh.new()
+                pmesh.top_radius = 0.06
+                pmesh.bottom_radius = 0.06
+                pmesh.height = 2.4
+                post.mesh = pmesh
+                var pmat = StandardMaterial3D.new()
+                pmat.albedo_color = Color(0.15, 0.15, 0.15, 1.0)
+                pmat.cull_mode = BaseMaterial3D.CULL_DISABLED
+                post.material_override = pmat
+                post.position = shelter_pos + Vector3(dx, 1.2, dz)
+                scenery_root.add_child(post)
+
+        # Shelter bench
+        var bench = MeshInstance3D.new()
+        var emesh = BoxMesh.new()
+        emesh.size = Vector3(2.0, 0.4, 0.6)
+        bench.mesh = emesh
+        var emat = StandardMaterial3D.new()
+        emat.albedo_color = Color(0.55, 0.35, 0.2, 1.0)
+        emat.cull_mode = BaseMaterial3D.CULL_DISABLED
+        bench.material_override = emat
+        bench.position = shelter_pos + Vector3(0.0, 0.2, 0.0)
+        scenery_root.add_child(bench)
+
+        # Connecting walkway
+        var walk = MeshInstance3D.new()
+        var wmesh = BoxMesh.new()
+        wmesh.size = Vector3(1.4, 0.02, 3.5)
+        walk.mesh = wmesh
+        var wmat = StandardMaterial3D.new()
+        wmat.albedo_color = Color(0.6, 0.62, 0.65, 1.0)
+        wmat.cull_mode = BaseMaterial3D.CULL_DISABLED
+        walk.material_override = wmat
+        walk.position = Vector3(pos.x + 1.7, 0.02, pos.y + 1.7)
+        scenery_root.add_child(walk)
+
+    # C. Perimeter Trees & Shrubs
+    var tree_positions = [
+        Vector2(-30, -30), Vector2(30, -30), Vector2(80, 20), Vector2(80, 80),
+        Vector2(20, 115), Vector2(-20, 115), Vector2(-80, 80), Vector2(-80, 20),
+        Vector2(0, 50), Vector2(50, 0), Vector2(0, 130), Vector2(-50, 95)
+    ]
+
+    for tp in tree_positions:
+        var tree_node = Node3D.new()
+        tree_node.position = Vector3(tp.x, 0.0, tp.y)
+
+        var trunk = MeshInstance3D.new()
+        var tmesh = CylinderMesh.new()
+        tmesh.top_radius = 0.3
+        tmesh.bottom_radius = 0.35
+        tmesh.height = 2.2
+        trunk.mesh = tmesh
+        var tmat = StandardMaterial3D.new()
+        tmat.albedo_color = Color(0.42, 0.28, 0.18, 1.0)
+        tmat.cull_mode = BaseMaterial3D.CULL_DISABLED
+        trunk.material_override = tmat
+        trunk.position = Vector3(0.0, 1.1, 0.0)
+        tree_node.add_child(trunk)
+
+        var foliage = MeshInstance3D.new()
+        var fmesh = SphereMesh.new()
+        fmesh.radius = 1.8
+        fmesh.height = 3.0
+        foliage.mesh = fmesh
+        var fmat = StandardMaterial3D.new()
+        fmat.albedo_color = Color(0.22, 0.52, 0.28, 1.0)
+        fmat.cull_mode = BaseMaterial3D.CULL_DISABLED
+        foliage.material_override = fmat
+        foliage.position = Vector3(0.0, 3.0, 0.0)
+        tree_node.add_child(foliage)
+
+        scenery_root.add_child(tree_node)
 
 func _toggle_camera() -> void:
     camera_mode_overview = !camera_mode_overview
@@ -363,7 +481,6 @@ func _update_active_route_visuals() -> void:
                     combined_points.append(pt)
 
     if combined_points.size() >= 2:
-        # Reduced width from 1.2m to 0.5m so asphalt & markings remain clearly visible
         active_route_mesh_instance.mesh = _make_route_strip_mesh(combined_points, 0.0, 0.5, 0.045)
         active_route_mesh_instance.visible = true
     else:
@@ -429,20 +546,16 @@ func _update_hud() -> void:
     var cam_str = "OVERVIEW" if camera_mode_overview else "FOLLOW"
     var total_len: float = navigator.total_length_m if navigator else 0.0
     var text = (
-        "EASY DRIVE — CAMPUS DEMO (5A.3B.2A)\n"
+        "EASY DRIVE — CAMPUS DEMO (5A.3B.2B.1)\n"
         + "Status: %s | Cam: %s | Route: [%d]\n"
-        + "%s\n"
         + "Speed: %.2f m/s | Len: %.1f m\n"
-        + "CONTROLS:\n"
-        + "  [1]-[3] Ring/Bypasses | [4] Bypass\n"
-        + "  [C] Toggle Cam (%s) | [Space] Pause | [R] Reset"
+        + "CONTROLS: [1]-[3] Ring/Bypasses | [4] Bypass\n"
+        + "[C] Cam | [Space] Pause | [R] Reset"
     ) % [
         status_str,
         cam_str,
         active_route_index,
-        current_route_name,
         dynamics.speed_mps,
-        total_len,
-        "Overview" if camera_mode_overview else "Follow"
+        total_len
     ]
     hud_label.text = text
