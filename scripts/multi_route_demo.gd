@@ -5,6 +5,8 @@ const CampusRoutePlanner = preload("res://scripts/campus_route_planner.gd")
 const RouteNavigator = preload("res://scripts/route_navigator.gd")
 const RouteFollowingController = preload("res://scripts/route_following_controller.gd")
 const VehicleDynamics = preload("res://scripts/vehicle_dynamics.gd")
+const CampusServiceCoordinator = preload("res://scripts/campus_service_coordinator.gd")
+const PassengerBookingPanel = preload("res://scripts/passenger_booking_panel.gd")
 
 const FIXED_DELTA: float = 1.0 / 60.0
 
@@ -67,6 +69,9 @@ var dynamics = VehicleDynamics.new()
 var navigator = RouteNavigator.new()
 var controller = RouteFollowingController.new()
 
+var service_coordinator: RefCounted = null
+var booking_panel: Control = null
+
 var active_route_index: int = 1
 var simulation_running: bool = true
 var route_active: bool = false
@@ -81,6 +86,7 @@ var camera_mode_overview: bool = true
 @onready var hud_label: Label = $CanvasLayer/TelemetryPanel/HUD
 @onready var road_root: Node3D = $RoadRoot
 @onready var station_root: Node3D = $StationRoot
+@onready var canvas_layer: CanvasLayer = $CanvasLayer
 
 func _ready() -> void:
     network = CampusMultiRouteNetwork.new()
@@ -88,34 +94,92 @@ func _ready() -> void:
         push_error("Multi-route demo network invalid: %s" % "; ".join(network.get_validation_errors()))
         return
 
+    # Initialize Service Coordinator & Booking Panel
+    service_coordinator = CampusServiceCoordinator.new()
+    service_coordinator.network = network
+    service_coordinator.planner = CampusRoutePlanner.new(network)
+    var north_stop = network.get_station_stop("north_gate")
+    var launch_segment: Dictionary = network.get_segment("north_to_east")
+    var launch_points: Array = launch_segment.get("centerline_points", [])
+    var launch_tangent: Vector2 = launch_points[1] - launch_points[0]
+    var launch_heading_rad: float = atan2(launch_tangent.x, launch_tangent.y)
+    service_coordinator.initialize_service("north_gate", north_stop.position_xz, launch_heading_rad)
+
+    booking_panel = PassengerBookingPanel.new()
+    booking_panel.name = "PassengerBookingPanel"
+    canvas_layer.add_child(booking_panel)
+    booking_panel.configure(network, service_coordinator.get_service_snapshot())
+    booking_panel.booking_requested.connect(_on_passenger_booking_requested)
+    booking_panel.boarding_requested.connect(_on_passenger_boarding_requested)
+    booking_panel.passenger_exit_requested.connect(_on_passenger_passenger_exit_requested)
+
     _build_network_visuals()
     _select_route(1)
-    print("[MULTI-ROUTE DEMO] Initialized successfully. Press 1-4 to select routes, Space to toggle run, R to reset, C to toggle camera.")
+    print("[MULTI-ROUTE DEMO + PASSENGER SERVICE] Initialized successfully. Press 1-4 for manual routes, B-panel for bookings, C for camera, Space to pause, R to reset.")
 
 func _input(event: InputEvent) -> void:
     if event is InputEventKey and event.pressed and not event.echo:
         match event.keycode:
             KEY_1, KEY_KP_1:
-                _select_route(1)
+                if _is_passenger_service_active():
+                    print("[DEMO] Manual route 1 ignored: Passenger service is active.")
+                else:
+                    _select_route(1)
             KEY_2, KEY_KP_2:
-                _select_route(2)
+                if _is_passenger_service_active():
+                    print("[DEMO] Manual route 2 ignored: Passenger service is active.")
+                else:
+                    _select_route(2)
             KEY_3, KEY_KP_3:
-                _select_route(3)
+                if _is_passenger_service_active():
+                    print("[DEMO] Manual route 3 ignored: Passenger service is active.")
+                else:
+                    _select_route(3)
             KEY_4, KEY_KP_4:
-                _select_route(4)
+                if _is_passenger_service_active():
+                    print("[DEMO] Manual route 4 ignored: Passenger service is active.")
+                else:
+                    _select_route(4)
             KEY_C:
                 _toggle_camera()
             KEY_R:
-                _select_route(active_route_index)
+                _reset_simulation()
             KEY_SPACE:
                 simulation_running = !simulation_running
+
+func _is_passenger_service_active() -> bool:
+    if service_coordinator == null:
+        return false
+    var state = str(service_coordinator.get_service_snapshot().get("service_state", "IDLE"))
+    return state != "IDLE"
 
 func _process(delta: float) -> void:
     _update_camera(delta)
     _update_hud()
 
 func _physics_process(delta: float) -> void:
-    if not simulation_running || not route_active:
+    if not simulation_running:
+        return
+
+    if _is_passenger_service_active():
+        var step_res = service_coordinator.step(FIXED_DELTA)
+        var snapshot = service_coordinator.get_service_snapshot()
+
+        # Sync vehicle dynamics from coordinator snapshot
+        dynamics._position_x_m = snapshot.position_xz.x
+        dynamics._position_z_m = snapshot.position_xz.y
+        dynamics._heading_rad = snapshot.heading_rad
+        dynamics._speed_mps = snapshot.speed_mps
+
+        if ego_car:
+            ego_car.position = Vector3(dynamics.position_x_m, 0.2, dynamics.position_z_m)
+            ego_car.rotation.y = dynamics.heading_rad
+
+        if booking_panel:
+            booking_panel.update_service_snapshot(snapshot)
+        return
+
+    if not route_active:
         return
 
     var control: Dictionary = controller.update(dynamics, navigator, FIXED_DELTA)
@@ -193,10 +257,52 @@ func _select_route(index: int) -> void:
     _update_active_route_visuals()
     print("[MULTI-ROUTE DEMO] Selected Route %d: %s (Segments: [%s])" % [index, current_route_name, ", ".join(current_route_segments)])
 
+func _on_passenger_booking_requested(pickup_station_id: String, destination_station_id: String) -> void:
+    if service_coordinator == null:
+        return
+    var result = service_coordinator.request_booking(pickup_station_id, destination_station_id)
+    var snapshot = service_coordinator.get_service_snapshot()
+    if booking_panel:
+        booking_panel.show_booking_result(result, snapshot)
+        booking_panel.update_service_snapshot(snapshot)
+    print("[PASSENGER SERVICE] Booking requested (%s -> %s): valid=%s" % [pickup_station_id, destination_station_id, result.get("valid", false)])
+
+func _on_passenger_boarding_requested() -> void:
+    if service_coordinator == null:
+        return
+    var result = service_coordinator.confirm_boarding()
+    var snapshot = service_coordinator.get_service_snapshot()
+    if booking_panel:
+        booking_panel.show_action_result("boarding", result, snapshot)
+        booking_panel.update_service_snapshot(snapshot)
+
+func _on_passenger_passenger_exit_requested() -> void:
+    if service_coordinator == null:
+        return
+    var result = service_coordinator.confirm_passenger_exit()
+    var snapshot = service_coordinator.get_service_snapshot()
+    if booking_panel:
+        booking_panel.show_action_result("exit", result, snapshot)
+        booking_panel.update_service_snapshot(snapshot)
+
+func _reset_simulation() -> void:
+    if service_coordinator != null:
+        var north_stop = network.get_station_stop("north_gate")
+        var launch_segment: Dictionary = network.get_segment("north_to_east")
+        var launch_points: Array = launch_segment.get("centerline_points", [])
+        var launch_tangent: Vector2 = launch_points[1] - launch_points[0]
+        var launch_heading_rad: float = atan2(launch_tangent.x, launch_tangent.y)
+        service_coordinator = CampusServiceCoordinator.new()
+        service_coordinator.network = network
+        service_coordinator.planner = CampusRoutePlanner.new(network)
+        service_coordinator.initialize_service("north_gate", north_stop.position_xz, launch_heading_rad)
+        if booking_panel:
+            booking_panel.configure(network, service_coordinator.get_service_snapshot())
+    _select_route(active_route_index)
+
 var active_route_mesh_instance: MeshInstance3D = null
 
 func _build_network_visuals() -> void:
-    # 1. Calculate bounding box for overview camera and layout
     var min_x: float = INF
     var max_x: float = -INF
     var min_z: float = INF
@@ -222,7 +328,6 @@ func _build_network_visuals() -> void:
     var span_z: float = max_z - min_z
     var max_span: float = maxf(span_x, span_z)
 
-    # Setup overview camera framing the entire network
     overview_camera = Camera3D.new()
     overview_camera.name = "OverviewCamera"
     var overview_height: float = maxf(60.0, max_span * 1.1)
@@ -232,7 +337,6 @@ func _build_network_visuals() -> void:
     overview_camera.current = true
     camera_mode_overview = true
 
-    # 2. Lightweight Green Campus Terrain Surface
     var terrain_mesh = BoxMesh.new()
     terrain_mesh.size = Vector3(300.0, 0.1, 300.0)
     var terrain_inst = MeshInstance3D.new()
@@ -245,7 +349,6 @@ func _build_network_visuals() -> void:
     terrain_inst.position = Vector3(center_x, -0.05, center_z)
     road_root.add_child(terrain_inst)
 
-    # 3. Junction connection plates (radius 2.0m matching road half-width, CULL_DISABLED)
     var junction_mat = StandardMaterial3D.new()
     junction_mat.albedo_color = Color(0.16, 0.18, 0.20, 1.0)
     junction_mat.roughness = 0.8
@@ -263,7 +366,6 @@ func _build_network_visuals() -> void:
         cyl.position = Vector3(pos.x, 0.015, pos.y)
         road_root.add_child(cyl)
 
-    # 4. Asphalt road segments (4.0m width) with clean centerline markings only (no overlapping edge lines)
     var asphalt_mat = StandardMaterial3D.new()
     asphalt_mat.albedo_color = Color(0.18, 0.20, 0.22, 1.0)
     asphalt_mat.roughness = 0.8
@@ -280,21 +382,18 @@ func _build_network_visuals() -> void:
         if points.size() < 2:
             continue
 
-        # Road surface (4.0m total width, half-width 2.0m)
         var road_mesh = _make_route_strip_mesh(points, 0.0, 4.0, 0.025)
         var road_instance = MeshInstance3D.new()
         road_instance.mesh = road_mesh
         road_instance.material_override = asphalt_mat
         road_root.add_child(road_instance)
 
-        # Centerline marking (clean single white strip, 0.15m width)
         var center_marking = _make_route_strip_mesh(points, 0.0, 0.15, 0.035)
         var center_inst = MeshInstance3D.new()
         center_inst.mesh = center_marking
         center_inst.material_override = marking_mat
         road_root.add_child(center_inst)
 
-    # 5. Station markers and readable Label3Ds positioned clearly above shelters
     for station in network.get_stations():
         var pos: Vector2 = station.stop_position_xz
         var cyl = MeshInstance3D.new()
@@ -318,7 +417,6 @@ func _build_network_visuals() -> void:
         label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
         station_root.add_child(label)
 
-    # 6. Campus Scenery & Station Infrastructure (Pushed outward for optimal clearance)
     _build_campus_scenery()
 
 func _build_campus_scenery() -> void:
@@ -326,7 +424,6 @@ func _build_campus_scenery() -> void:
     scenery_root.name = "CampusScenery"
     road_root.add_child(scenery_root)
 
-    # A. Four Campus Buildings (pushed further back to avoid crowding Follow mode)
     var bldgs = [
         {"pos": Vector3(0.0, 3.0, -22.0), "size": Vector3(14.0, 6.0, 8.0), "color": Color(0.72, 0.76, 0.82, 1.0), "name": "North Gate Admin"},
         {"pos": Vector3(68.0, 3.5, 68.0), "size": Vector3(16.0, 7.0, 12.0), "color": Color(0.82, 0.68, 0.52, 1.0), "name": "University Library"},
@@ -355,12 +452,10 @@ func _build_campus_scenery() -> void:
         blabel.billboard = BaseMaterial3D.BILLBOARD_ENABLED
         scenery_root.add_child(blabel)
 
-    # B. Station Waiting Shelters & Walkways (distinct contrast and geometry)
     for station in network.get_stations():
         var pos: Vector2 = station.stop_position_xz
         var shelter_pos = Vector3(pos.x + 3.5, 0.0, pos.y + 3.5)
 
-        # Shelter roof (contrast roof)
         var roof = MeshInstance3D.new()
         var rmesh = BoxMesh.new()
         rmesh.size = Vector3(3.2, 0.18, 2.2)
@@ -372,7 +467,6 @@ func _build_campus_scenery() -> void:
         roof.position = shelter_pos + Vector3(0.0, 2.4, 0.0)
         scenery_root.add_child(roof)
 
-        # Shelter supports (4 posts)
         for dx in [-1.4, 1.4]:
             for dz in [-0.9, 0.9]:
                 var post = MeshInstance3D.new()
@@ -388,7 +482,6 @@ func _build_campus_scenery() -> void:
                 post.position = shelter_pos + Vector3(dx, 1.2, dz)
                 scenery_root.add_child(post)
 
-        # Shelter bench
         var bench = MeshInstance3D.new()
         var emesh = BoxMesh.new()
         emesh.size = Vector3(2.0, 0.4, 0.6)
@@ -400,7 +493,6 @@ func _build_campus_scenery() -> void:
         bench.position = shelter_pos + Vector3(0.0, 0.2, 0.0)
         scenery_root.add_child(bench)
 
-        # Connecting walkway
         var walk = MeshInstance3D.new()
         var wmesh = BoxMesh.new()
         wmesh.size = Vector3(1.4, 0.02, 3.5)
@@ -412,7 +504,6 @@ func _build_campus_scenery() -> void:
         walk.position = Vector3(pos.x + 1.7, 0.02, pos.y + 1.7)
         scenery_root.add_child(walk)
 
-    # C. Perimeter Trees & Shrubs
     var tree_positions = [
         Vector2(-30, -30), Vector2(30, -30), Vector2(80, 20), Vector2(80, 80),
         Vector2(20, 115), Vector2(-20, 115), Vector2(-80, 80), Vector2(-80, 20),
@@ -541,21 +632,18 @@ func _update_hud() -> void:
     if not hud_label:
         return
     var status_str = "RUNNING" if simulation_running else "PAUSED"
-    if not route_active:
-        status_str = "ARRIVED / STOPPED"
+    if service_coordinator != null:
+        var state = str(service_coordinator.get_service_snapshot().get("service_state", "IDLE"))
+        if state != "IDLE":
+            status_str = "SERVICE: " + state
     var cam_str = "OVERVIEW" if camera_mode_overview else "FOLLOW"
     var total_len: float = navigator.total_length_m if navigator else 0.0
     var text = (
-        "EASY DRIVE — CAMPUS DEMO (5A.3B.2B.1)\n"
-        + "Status: %s | Cam: %s | Route: [%d]\n"
-        + "Speed: %.2f m/s | Len: %.1f m\n"
-        + "CONTROLS: [1]-[3] Ring/Bypasses | [4] Bypass\n"
-        + "[C] Cam | [Space] Pause | [R] Reset"
+        "EASY DRIVE — PASSENGER SERVICE (5B.1)\n"
+        + "Status: %s | Cam: %s\n"
+        + "CONTROLS: [1]-[3] Manual Routes (Idle only) | [C] Cam | [Space] Pause | [R] Reset"
     ) % [
         status_str,
-        cam_str,
-        active_route_index,
-        dynamics.speed_mps,
-        total_len
+        cam_str
     ]
     hud_label.text = text
