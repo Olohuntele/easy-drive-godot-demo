@@ -99,7 +99,7 @@ func _ready() -> void:
     service_coordinator.network = network
     service_coordinator.planner = CampusRoutePlanner.new(network)
     service_coordinator.defer_destination_routing = false
-    service_coordinator.defer_return_routing = true
+    service_coordinator.defer_return_routing = false
     var north_stop = network.get_station_stop("north_gate")
     var launch_segment: Dictionary = network.get_segment("north_to_east")
     var launch_points: Array = launch_segment.get("centerline_points", [])
@@ -298,7 +298,7 @@ func _reset_simulation() -> void:
         service_coordinator.network = network
         service_coordinator.planner = CampusRoutePlanner.new(network)
         service_coordinator.defer_destination_routing = false
-        service_coordinator.defer_return_routing = true
+        service_coordinator.defer_return_routing = false
         service_coordinator.initialize_service("north_gate", north_stop.position_xz, launch_heading_rad)
         if booking_panel:
             booking_panel.configure(network, service_coordinator.get_service_snapshot())

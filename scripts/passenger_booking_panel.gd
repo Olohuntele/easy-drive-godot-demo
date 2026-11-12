@@ -314,7 +314,7 @@ func _journey_status_text(
             return "Traveling to destination: %s" % destination_name
         JourneyStates.DROPOFF:
             if exit_confirmed:
-                return "Passenger exited at %s — service awaiting next phase." % destination_name
+                return "Passenger exited at %s — returning to North Gate." % destination_name
             return "Waiting for passenger exit at %s%s" % [
                 destination_name,
                 " (arrival certified)" if arrival_certified else ""
@@ -325,7 +325,7 @@ func _journey_status_text(
             return "Journey blocked — reservation retained."
         JourneyStates.IDLE:
             if arrival_certified:
-                return "Journey completed; shuttle is available."
+                return "Service available — ready for another booking."
             return "Choose your pickup and destination."
     return "Journey status unavailable."
 
