@@ -23,6 +23,7 @@ func _run_tests() -> void:
     network = CampusNetwork.new()
     _test_complete_journeys_at_both_timesteps()
     _test_sequential_bookings()
+    _test_three_consecutive_journeys_and_stale_events()
     _test_booking_and_confirmation_validation()
     _test_stationary_and_remote_pickup()
     _test_wrong_station_arrival_and_safe_blocking()
@@ -302,6 +303,36 @@ func _test_sequential_bookings() -> void:
             && coordinator.get_service_snapshot().maximum_route_handoff_position_delta_m
                 <= POSE_TOLERANCE_M,
         "sequential journey preserves physical handoff state"
+    )
+
+func _test_three_consecutive_journeys_and_stale_events() -> void:
+    var coordinator: RefCounted = _new_coordinator()
+    var dt: float = FIXED_STEPS[0]
+    var tick: int = 1
+
+    var res1 = _run_booking(coordinator, "north_gate", "library", dt, tick)
+    _expect(res1.success, "three consecutive journeys: journey 1 completes successfully")
+    if not res1.success:
+        return
+    tick = int(res1.next_tick_id)
+
+    var stale_board = coordinator.confirm_boarding()
+    var stale_exit = coordinator.confirm_passenger_exit()
+    _expect(
+        not stale_board.get("valid", false) && not stale_exit.get("valid", false),
+        "stale confirmation events after completed journey are rejected"
+    )
+
+    var res2 = _run_booking(coordinator, "sports_hall", "innovation_centre", dt, tick)
+    _expect(res2.success, "three consecutive journeys: journey 2 completes successfully")
+    if not res2.success:
+        return
+    tick = int(res2.next_tick_id)
+
+    var res3 = _run_booking(coordinator, "library", "sports_hall", dt, tick)
+    _expect(
+        res3.success && coordinator.get_service_snapshot().service_state == PassengerJourney.IDLE,
+        "three consecutive journeys: journey 3 completes and returns to IDLE availability"
     )
 
 func _test_booking_and_confirmation_validation() -> void:
