@@ -38,6 +38,7 @@ var maximum_route_handoff_heading_delta_rad: float = 0.0
 var dynamics_step_count: int = 0
 var coordinator_tick_count: int = 0
 var defer_destination_routing: bool = false
+var defer_return_routing: bool = false
 
 var _last_physics_tick_id: int = -1
 
@@ -252,6 +253,10 @@ func confirm_passenger_exit() -> Dictionary:
         last_failure_reason = str(result.get("failure_reason", "passenger_exit_failed"))
         return result
     last_failure_reason = ""
+    if defer_return_routing:
+        navigator.clear_route()
+        current_leg = "dropoff_confirmed"
+        return {"valid": true, "failure_reason": "", "state": journey.state, "exit_confirmed": true}
     var installation: Dictionary = _install_active_leg()
     if not installation.get("valid", false):
         return installation
@@ -274,6 +279,7 @@ func get_service_snapshot() -> Dictionary:
         "arrival_status": arrival_status,
         "arrival_certified": arrival_status == "ARRIVED",
         "boarding_confirmed": journey != null && journey.has_method("is_boarding_confirmed") && journey.is_boarding_confirmed(),
+        "exit_confirmed": journey != null && journey.has_method("is_passenger_exit_confirmed") && journey.is_passenger_exit_confirmed(),
         "blocked": journey != null && journey.state == PassengerJourney.BLOCKED,
         "blocked_reason": blocked_reason if not blocked_reason.is_empty()
             else (journey.blocked_reason if journey != null else ""),

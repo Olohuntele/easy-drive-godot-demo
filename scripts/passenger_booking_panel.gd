@@ -167,28 +167,32 @@ func update_service_snapshot(snapshot: Dictionary) -> void:
         str(active_booking.get("destination_station_id", ""))
     )
     var boarding_confirmed: bool = bool(snapshot.get("boarding_confirmed", false))
+    var exit_confirmed: bool = bool(snapshot.get("exit_confirmed", false))
     journey_summary_label.visible = tracking_journey && not active_booking.is_empty()
-    journey_summary_label.text = "Trip: %s â†’ %s" % [pickup_name, destination_name]
+    journey_summary_label.text = "Trip: %s → %s" % [pickup_name, destination_name]
     journey_status_label.visible = tracking_journey
     journey_status_label.text = _journey_status_text(
         journey_state,
         pickup_name,
         destination_name,
         bool(snapshot.get("arrival_certified", false)),
-        boarding_confirmed
+        boarding_confirmed,
+        exit_confirmed
     )
     journey_progress.visible = tracking_journey
     journey_progress.value = _journey_progress(
         journey_state,
         bool(snapshot.get("arrival_certified", false)),
-        boarding_confirmed
+        boarding_confirmed,
+        exit_confirmed
     )
     board_button.visible = journey_state == JourneyStates.BOARDING \
         && bool(snapshot.get("arrival_certified", false)) \
         && not boarding_confirmed
     board_button.disabled = _action_in_flight || blocked
     exit_button.visible = journey_state == JourneyStates.DROPOFF \
-        && bool(snapshot.get("arrival_certified", false))
+        && bool(snapshot.get("arrival_certified", false)) \
+        && not exit_confirmed
     exit_button.disabled = _action_in_flight || blocked
 
     request_button.disabled = blocked || busy || _request_in_flight
@@ -291,16 +295,17 @@ func _journey_status_text(
     pickup_name: String,
     destination_name: String,
     arrival_certified: bool,
-    boarding_confirmed: bool = false
+    boarding_confirmed: bool = false,
+    exit_confirmed: bool = false
 ) -> String:
     match journey_state:
         JourneyStates.ASSIGNED:
-            return "Shuttle assigned: %s â†’ %s" % [pickup_name, destination_name]
+            return "Shuttle assigned: %s → %s" % [pickup_name, destination_name]
         JourneyStates.TO_PICKUP:
             return "Traveling to pickup: %s" % pickup_name
         JourneyStates.BOARDING:
             if boarding_confirmed:
-                return "Passenger boarded at %s â€” awaiting destination (Phase 5B.2B)." % pickup_name
+                return "Passenger boarded at %s — traveling to destination: %s" % [pickup_name, destination_name]
             return "Waiting for boarding at %s%s" % [
                 pickup_name,
                 " (arrival certified)" if arrival_certified else ""
@@ -308,6 +313,8 @@ func _journey_status_text(
         JourneyStates.TO_DESTINATION:
             return "Traveling to destination: %s" % destination_name
         JourneyStates.DROPOFF:
+            if exit_confirmed:
+                return "Passenger exited at %s — service awaiting next phase." % destination_name
             return "Waiting for passenger exit at %s%s" % [
                 destination_name,
                 " (arrival certified)" if arrival_certified else ""
@@ -315,7 +322,7 @@ func _journey_status_text(
         JourneyStates.RETURNING_TO_SERVICE:
             return "Returning to North Gate service."
         JourneyStates.BLOCKED:
-            return "Journey blocked â€” reservation retained."
+            return "Journey blocked — reservation retained."
         JourneyStates.IDLE:
             if arrival_certified:
                 return "Journey completed; shuttle is available."
@@ -325,7 +332,8 @@ func _journey_status_text(
 func _journey_progress(
     journey_state: String,
     arrival_certified: bool,
-    boarding_confirmed: bool = false
+    boarding_confirmed: bool = false,
+    exit_confirmed: bool = false
 ) -> float:
     if journey_state == JourneyStates.IDLE:
         return 100.0 if arrival_certified else 0.0
@@ -337,11 +345,11 @@ func _journey_progress(
         JourneyStates.BOARDING:
             return 45.0 if boarding_confirmed else 40.0
         JourneyStates.TO_DESTINATION:
-            return 55.0
+            return 65.0
         JourneyStates.DROPOFF:
-            return 70.0
+            return 85.0 if exit_confirmed else 75.0
         JourneyStates.RETURNING_TO_SERVICE:
-            return 85.0
+            return 90.0
         JourneyStates.BLOCKED:
             return 0.0
     return 0.0
