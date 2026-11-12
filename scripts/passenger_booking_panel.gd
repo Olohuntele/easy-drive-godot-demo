@@ -55,7 +55,7 @@ func _ready() -> void:
     margin.add_child(content)
 
     var title := Label.new()
-    title.text = "EASY DRIVE — BOOK A SHUTTLE"
+    title.text = "EASY DRIVE â€” BOOK A SHUTTLE"
     title.add_theme_font_size_override("font_size", 15)
     content.add_child(title)
 
@@ -130,7 +130,7 @@ func _ready() -> void:
     content.add_child(feedback_label)
 
     var controls_hint := Label.new()
-    controls_hint.text = "B demo booking · E board · X exit · Esc releases UI focus"
+    controls_hint.text = "B demo booking Â· E board Â· X exit Â· Esc releases UI focus"
     controls_hint.add_theme_font_size_override("font_size", 10)
     controls_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
     content.add_child(controls_hint)
@@ -166,22 +166,26 @@ func update_service_snapshot(snapshot: Dictionary) -> void:
     var destination_name: String = _station_name(
         str(active_booking.get("destination_station_id", ""))
     )
+    var boarding_confirmed: bool = bool(snapshot.get("boarding_confirmed", false))
     journey_summary_label.visible = tracking_journey && not active_booking.is_empty()
-    journey_summary_label.text = "Trip: %s → %s" % [pickup_name, destination_name]
+    journey_summary_label.text = "Trip: %s â†’ %s" % [pickup_name, destination_name]
     journey_status_label.visible = tracking_journey
     journey_status_label.text = _journey_status_text(
         journey_state,
         pickup_name,
         destination_name,
-        bool(snapshot.get("arrival_certified", false))
+        bool(snapshot.get("arrival_certified", false)),
+        boarding_confirmed
     )
     journey_progress.visible = tracking_journey
     journey_progress.value = _journey_progress(
         journey_state,
-        bool(snapshot.get("arrival_certified", false))
+        bool(snapshot.get("arrival_certified", false)),
+        boarding_confirmed
     )
     board_button.visible = journey_state == JourneyStates.BOARDING \
-        && bool(snapshot.get("arrival_certified", false))
+        && bool(snapshot.get("arrival_certified", false)) \
+        && not boarding_confirmed
     board_button.disabled = _action_in_flight || blocked
     exit_button.visible = journey_state == JourneyStates.DROPOFF \
         && bool(snapshot.get("arrival_certified", false))
@@ -189,9 +193,9 @@ func update_service_snapshot(snapshot: Dictionary) -> void:
 
     request_button.disabled = blocked || busy || _request_in_flight
     if blocked:
-        service_status_label.text = "Service blocked — reservation retained."
+        service_status_label.text = "Service blocked â€” reservation retained."
     elif busy:
-        service_status_label.text = "Shuttle occupied — finish the current journey."
+        service_status_label.text = "Shuttle occupied â€” finish the current journey."
     elif journey_state == "IDLE":
         service_status_label.text = "Service available."
     else:
@@ -278,7 +282,7 @@ func _humanize_failure(reason: String) -> String:
 
 func _station_name(station_id: String) -> String:
     if station_id.is_empty() || _network == null:
-        return "—"
+        return "â€”"
     var station: Dictionary = _network.get_station(station_id)
     return str(station.get("display_name", station_id)).replace(" Stop", "")
 
@@ -286,14 +290,17 @@ func _journey_status_text(
     journey_state: String,
     pickup_name: String,
     destination_name: String,
-    arrival_certified: bool
+    arrival_certified: bool,
+    boarding_confirmed: bool = false
 ) -> String:
     match journey_state:
         JourneyStates.ASSIGNED:
-            return "Shuttle assigned: %s → %s" % [pickup_name, destination_name]
+            return "Shuttle assigned: %s â†’ %s" % [pickup_name, destination_name]
         JourneyStates.TO_PICKUP:
             return "Traveling to pickup: %s" % pickup_name
         JourneyStates.BOARDING:
+            if boarding_confirmed:
+                return "Passenger boarded at %s â€” awaiting destination (Phase 5B.2B)." % pickup_name
             return "Waiting for boarding at %s%s" % [
                 pickup_name,
                 " (arrival certified)" if arrival_certified else ""
@@ -308,14 +315,18 @@ func _journey_status_text(
         JourneyStates.RETURNING_TO_SERVICE:
             return "Returning to North Gate service."
         JourneyStates.BLOCKED:
-            return "Journey blocked — reservation retained."
+            return "Journey blocked â€” reservation retained."
         JourneyStates.IDLE:
             if arrival_certified:
                 return "Journey completed; shuttle is available."
             return "Choose your pickup and destination."
     return "Journey status unavailable."
 
-func _journey_progress(journey_state: String, arrival_certified: bool) -> float:
+func _journey_progress(
+    journey_state: String,
+    arrival_certified: bool,
+    boarding_confirmed: bool = false
+) -> float:
     if journey_state == JourneyStates.IDLE:
         return 100.0 if arrival_certified else 0.0
     match journey_state:
@@ -324,7 +335,7 @@ func _journey_progress(journey_state: String, arrival_certified: bool) -> float:
         JourneyStates.TO_PICKUP:
             return 25.0
         JourneyStates.BOARDING:
-            return 40.0
+            return 45.0 if boarding_confirmed else 40.0
         JourneyStates.TO_DESTINATION:
             return 55.0
         JourneyStates.DROPOFF:

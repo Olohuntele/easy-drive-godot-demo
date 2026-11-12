@@ -98,6 +98,7 @@ func _ready() -> void:
     service_coordinator = CampusServiceCoordinator.new()
     service_coordinator.network = network
     service_coordinator.planner = CampusRoutePlanner.new(network)
+    service_coordinator.defer_destination_routing = true
     var north_stop = network.get_station_stop("north_gate")
     var launch_segment: Dictionary = network.get_segment("north_to_east")
     var launch_points: Array = launch_segment.get("centerline_points", [])
@@ -295,6 +296,7 @@ func _reset_simulation() -> void:
         service_coordinator = CampusServiceCoordinator.new()
         service_coordinator.network = network
         service_coordinator.planner = CampusRoutePlanner.new(network)
+        service_coordinator.defer_destination_routing = true
         service_coordinator.initialize_service("north_gate", north_stop.position_xz, launch_heading_rad)
         if booking_panel:
             booking_panel.configure(network, service_coordinator.get_service_snapshot())
@@ -639,7 +641,7 @@ func _update_hud() -> void:
     var cam_str = "OVERVIEW" if camera_mode_overview else "FOLLOW"
     var total_len: float = navigator.total_length_m if navigator else 0.0
     var text = (
-        "EASY DRIVE — PASSENGER SERVICE (5B.1)\n"
+        "EASY DRIVE â€” PASSENGER SERVICE (5B.1)\n"
         + "Status: %s | Cam: %s\n"
         + "CONTROLS: [1]-[3] Manual Routes (Idle only) | [C] Cam | [Space] Pause | [R] Reset"
     ) % [
