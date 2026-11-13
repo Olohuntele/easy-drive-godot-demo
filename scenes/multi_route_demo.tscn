@@ -1,35 +1,13 @@
-﻿[gd_scene load_steps=12 format=3 uid="uid://mroutedemo01"]
+[gd_scene load_steps=4 format=3 uid="uid://mroutedemo01"]
 
 [ext_resource type="Script" path="res://scripts/multi_route_demo.gd" id="1_demo"]
+[ext_resource type="PackedScene" path="res://scenes/vehicles/electric_campus_shuttle_visual.tscn" id="2_shuttle"]
 
 [sub_resource type="Environment" id="Environment_demo"]
 background_mode = 1
 background_color = Color(0.35, 0.55, 0.85, 1)
 ambient_light_source = 2
 ambient_light_color = Color(0.6, 0.6, 0.6, 1)
-
-[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_body"]
-albedo_color = Color(0.0, 0.4, 0.9, 1)
-metallic = 0.2
-roughness = 0.5
-
-[sub_resource type="BoxMesh" id="BoxMesh_body"]
-size = Vector3(1.6, 0.7, 3.5)
-
-[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_cabin"]
-albedo_color = Color(0.1, 0.1, 0.15, 1)
-roughness = 0.1
-
-[sub_resource type="BoxMesh" id="BoxMesh_cabin"]
-size = Vector3(1.4, 0.5, 2.0)
-
-[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_wheel"]
-albedo_color = Color(0.05, 0.05, 0.05, 1)
-
-[sub_resource type="CylinderMesh" id="CylinderMesh_wheel"]
-top_radius = 0.35
-bottom_radius = 0.35
-height = 0.3
 
 [sub_resource type="StyleBoxFlat" id="StyleBoxFlat_panel"]
 bg_color = Color(0.05, 0.08, 0.12, 0.9)
@@ -60,35 +38,7 @@ shadow_enabled = true
 [node name="EgoCar" type="Node3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.2, 0)
 
-[node name="Body" type="MeshInstance3D" parent="EgoCar"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.4, 0)
-mesh = SubResource("BoxMesh_body")
-surface_material_override/0 = SubResource("StandardMaterial3D_body")
-
-[node name="Cabin" type="MeshInstance3D" parent="EgoCar"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.95, -0.2)
-mesh = SubResource("BoxMesh_cabin")
-surface_material_override/0 = SubResource("StandardMaterial3D_cabin")
-
-[node name="WheelFL" type="MeshInstance3D" parent="EgoCar"]
-transform = Transform3D(-4.37114e-08, -1, 0, 1, -4.37114e-08, 0, 0, 0, 1, -0.85, 0.35, 1.1)
-mesh = SubResource("CylinderMesh_wheel")
-surface_material_override/0 = SubResource("StandardMaterial3D_wheel")
-
-[node name="WheelFR" type="MeshInstance3D" parent="EgoCar"]
-transform = Transform3D(-4.37114e-08, -1, 0, 1, -4.37114e-08, 0, 0, 0, 1, 0.85, 0.35, 1.1)
-mesh = SubResource("CylinderMesh_wheel")
-surface_material_override/0 = SubResource("StandardMaterial3D_wheel")
-
-[node name="WheelRL" type="MeshInstance3D" parent="EgoCar"]
-transform = Transform3D(-4.37114e-08, -1, 0, 1, -4.37114e-08, 0, 0, 0, 1, -0.85, 0.35, -1.1)
-mesh = SubResource("CylinderMesh_wheel")
-surface_material_override/0 = SubResource("StandardMaterial3D_wheel")
-
-[node name="WheelRR" type="MeshInstance3D" parent="EgoCar"]
-transform = Transform3D(-4.37114e-08, -1, 0, 1, -4.37114e-08, 0, 0, 0, 1, 0.85, 0.35, -1.1)
-mesh = SubResource("CylinderMesh_wheel")
-surface_material_override/0 = SubResource("StandardMaterial3D_wheel")
+[node name="ElectricCampusShuttleVisual" parent="EgoCar" instance=ExtResource("2_shuttle")]
 
 [node name="FollowCamera" type="Camera3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 0.866025, 0.5, 0, -0.5, 0.866025, 0, 6, -10)
