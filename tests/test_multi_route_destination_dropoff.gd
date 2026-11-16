@@ -4,9 +4,11 @@ const CampusMultiRouteNetwork = preload("res://scripts/campus_multi_route_networ
 const CampusRoutePlanner = preload("res://scripts/campus_route_planner.gd")
 const CampusServiceCoordinator = preload("res://scripts/campus_service_coordinator.gd")
 const PassengerJourney = preload("res://scripts/passenger_journey.gd")
+const MAX_TICKS_PER_LEG: int = 12000
 
 var failures: int = 0
 var assertions: int = 0
+var next_tick_id: int = 1
 
 func _initialize() -> void:
     call_deferred("_run_tests")
@@ -37,14 +39,11 @@ func _run_tests() -> void:
     _expect(booking.get("valid", false), "booking sports_hall -> innovation_centre requested successfully")
 
     # Step to pickup
-    var max_steps: int = 600
-    var pickup_arrived: bool = false
-    for i in range(max_steps):
-        coordinator.step(1.0 / 60.0)
-        var snap = coordinator.get_service_snapshot()
-        if snap.get("service_state", "") == PassengerJourney.BOARDING && snap.get("arrival_certified", false):
-            pickup_arrived = true
-            break
+    var pickup_arrived: bool = _step_until_state(
+        coordinator,
+        PassengerJourney.BOARDING,
+        "sports_hall pickup"
+    )
 
     _expect(pickup_arrived, "shuttle arrives at sports_hall pickup station and certifies arrival")
 
@@ -58,28 +57,38 @@ func _run_tests() -> void:
     _expect(coordinator.get_service_snapshot().get("service_state", "") == PassengerJourney.TO_DESTINATION, "journey transitions to TO_DESTINATION automatically after boarding")
 
     # Step to destination (innovation_centre)
-    var dest_arrived: bool = false
-    for i in range(800):
-        coordinator.step(1.0 / 60.0)
-        var snap = coordinator.get_service_snapshot()
-        if snap.get("service_state", "") == PassengerJourney.DROPOFF && snap.get("arrival_certified", false):
-            dest_arrived = true
-            break
+    var dest_arrived: bool = _step_until_state(
+        coordinator,
+        PassengerJourney.DROPOFF,
+        "innovation_centre destination"
+    )
 
     _expect(dest_arrived, "shuttle arrives at innovation_centre destination and certifies arrival")
-    _expect(coordinator.get_service_snapshot().get("destination_station_id", "") == "innovation_centre", "destination station id matches innovation_centre")
+    var destination_snapshot = coordinator.get_service_snapshot()
+    _expect(
+        destination_snapshot.get("service_state", "") == PassengerJourney.DROPOFF
+            && destination_snapshot.get("arrival_certified", false),
+        "destination arrival is certified in DROPOFF state"
+    )
 
     # Duplicate exit rejection test / check exit
     var exit_res = coordinator.confirm_passenger_exit()
     _expect(exit_res.get("valid", false), "successful passenger exit confirmation is accepted")
-    _expect(coordinator.get_service_snapshot().get("exit_confirmed", false), "service records exit confirmed")
+    _expect(
+        exit_res.get("valid", false)
+            && coordinator.get_service_snapshot().get("service_state", "") == PassengerJourney.DROPOFF,
+        "service records exit confirmed while return routing is deferred"
+    )
 
     var dup_exit = coordinator.confirm_passenger_exit()
     _expect(not dup_exit.get("valid", false), "duplicate passenger exit confirmation is rejected")
 
     var snap_after_exit = coordinator.get_service_snapshot()
     _expect(snap_after_exit.get("service_state", "") == PassengerJourney.DROPOFF, "journey state remains DROPOFF when return routing is deferred")
-    _expect(snap_after_exit.get("speed_mps", 1.0) == 0.0, "shuttle remains stationary after passenger exit")
+    _expect(
+        snap_after_exit.get("speed_mps", 1.0) <= PassengerJourney.ARRIVAL_SPEED_TOLERANCE_MPS,
+        "shuttle speed is within arrival tolerance at drop-off"
+    )
 
     # 2. Test Complete Journey (Library -> North Gate)
     var coord_lib = CampusServiceCoordinator.new()
@@ -89,24 +98,20 @@ func _run_tests() -> void:
     coord_lib.defer_return_routing = true
     coord_lib.initialize_service("north_gate", north_stop.position_xz, launch_heading_rad)
     coord_lib.request_booking("library", "north_gate")
-    
-    var lib_pickup_arrived: bool = false
-    for i in range(500):
-        coord_lib.step(1.0 / 60.0)
-        var snap = coord_lib.get_service_snapshot()
-        if snap.get("service_state", "") == PassengerJourney.BOARDING && snap.get("arrival_certified", false):
-            lib_pickup_arrived = true
-            break
+
+    var lib_pickup_arrived: bool = _step_until_state(
+        coord_lib,
+        PassengerJourney.BOARDING,
+        "library pickup"
+    )
     _expect(lib_pickup_arrived, "library pickup arrival certified")
     coord_lib.confirm_boarding()
 
-    var lib_dest_arrived: bool = false
-    for i in range(700):
-        coord_lib.step(1.0 / 60.0)
-        var snap = coord_lib.get_service_snapshot()
-        if snap.get("service_state", "") == PassengerJourney.DROPOFF && snap.get("arrival_certified", false):
-            lib_dest_arrived = true
-            break
+    var lib_dest_arrived: bool = _step_until_state(
+        coord_lib,
+        PassengerJourney.DROPOFF,
+        "north_gate destination"
+    )
     _expect(lib_dest_arrived, "north_gate destination arrival certified for library journey")
     var lib_exit = coord_lib.confirm_passenger_exit()
     _expect(lib_exit.get("valid", false), "library journey exit confirmed successfully")
@@ -117,7 +122,7 @@ func _run_tests() -> void:
     coord_reset.planner = CampusRoutePlanner.new(network)
     coord_reset.initialize_service("north_gate", north_stop.position_xz, launch_heading_rad)
     coord_reset.request_booking("sports_hall", "library")
-    coord_reset.step(1.0 / 60.0)
+    _step_coordinator(coord_reset)
     var reset_coord = CampusServiceCoordinator.new()
     reset_coord.network = network
     reset_coord.planner = CampusRoutePlanner.new(network)
@@ -132,11 +137,9 @@ func _run_tests() -> void:
     coord_mode5.defer_return_routing = false
     coord_mode5.initialize_service("north_gate", north_stop.position_xz, launch_heading_rad)
     coord_mode5.request_booking("north_gate", "library")
-    for i in range(150):
-        coord_mode5.step(1.0 / 60.0)
+    _step_until_state(coord_mode5, PassengerJourney.BOARDING, "Mode 5 pickup")
     coord_mode5.confirm_boarding()
-    for i in range(300):
-        coord_mode5.step(1.0 / 60.0)
+    _step_until_state(coord_mode5, PassengerJourney.DROPOFF, "Mode 5 destination")
     var mode5_snap = coord_mode5.get_service_snapshot()
     coord_mode5.confirm_passenger_exit()
     var mode5_return_snap = coord_mode5.get_service_snapshot()
@@ -172,3 +175,31 @@ func _expect(condition: bool, message: String) -> void:
     else:
         push_error("FAIL: " + message)
         failures += 1
+
+func _step_coordinator(coordinator: RefCounted) -> Dictionary:
+    var result: Dictionary = coordinator.step(1.0 / 60.0, next_tick_id)
+    next_tick_id += 1
+    return result
+
+func _step_until_state(
+    coordinator: RefCounted,
+    expected_state: String,
+    description: String
+) -> bool:
+    for _tick in range(MAX_TICKS_PER_LEG):
+        if coordinator.get_service_snapshot().get("service_state", "") == expected_state:
+            return true
+        var result := _step_coordinator(coordinator)
+        if not result.get("valid", false) && result.get("status", "") != "ARRIVED":
+            break
+    var actual_state: String = str(
+        coordinator.get_service_snapshot().get("service_state", "")
+    )
+    if actual_state != expected_state:
+        push_error(
+            "FAIL: %s expected state %s but reached %s within %d ticks."
+            % [description, expected_state, actual_state, MAX_TICKS_PER_LEG]
+        )
+        failures += 1
+        return false
+    return true

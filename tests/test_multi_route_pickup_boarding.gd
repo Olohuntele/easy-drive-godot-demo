@@ -99,11 +99,14 @@ func _run_tests() -> void:
         var node = scene.instantiate()
         _expect(node != null, "multi_route_demo scene instantiates")
         if node != null:
+            root.add_child(node)
+            await process_frame
             _expect(node.has_method("_is_passenger_service_active"), "multi_route_demo has _is_passenger_service_active method")
             _expect(not node._is_passenger_service_active(), "passenger service is initially inactive (allowing manual routes)")
             node.service_coordinator.request_booking("sports_hall", "library")
             _expect(node._is_passenger_service_active(), "passenger service is active when booking requested, inhibiting manual route keys 1-4")
-            node.free()
+            node.queue_free()
+            await process_frame
 
     print("Phase 5B.2A pickup & boarding tests complete: %d assertions, %d failures." % [assertions, failures])
     if failures == 0:

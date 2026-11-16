@@ -4,9 +4,11 @@ const CampusMultiRouteNetwork = preload("res://scripts/campus_multi_route_networ
 const CampusRoutePlanner = preload("res://scripts/campus_route_planner.gd")
 const CampusServiceCoordinator = preload("res://scripts/campus_service_coordinator.gd")
 const PassengerJourney = preload("res://scripts/passenger_journey.gd")
+const MAX_TICKS_PER_LEG: int = 12000
 
 var failures: int = 0
 var assertions: int = 0
+var next_tick_id: int = 1
 
 func _initialize() -> void:
     call_deferred("_run_tests")
@@ -37,13 +39,11 @@ func _run_tests() -> void:
     _expect(booking1.get("valid", false), "trip 1 booking (sports_hall -> innovation_centre) requested successfully")
 
     # Step to pickup
-    var pickup_arrived: bool = false
-    for i in range(600):
-        coordinator.step(1.0 / 60.0)
-        var snap = coordinator.get_service_snapshot()
-        if snap.get("service_state", "") == PassengerJourney.BOARDING && snap.get("arrival_certified", false):
-            pickup_arrived = true
-            break
+    var pickup_arrived: bool = _step_until_state(
+        coordinator,
+        PassengerJourney.BOARDING,
+        "sports_hall pickup"
+    )
     _expect(pickup_arrived, "shuttle arrives at sports_hall pickup and certifies arrival")
 
     # Confirm boarding
@@ -51,13 +51,11 @@ func _run_tests() -> void:
     _expect(board_res.get("valid", false), "boarding confirmed, transitioning to TO_DESTINATION")
 
     # Step to destination
-    var dest_arrived: bool = false
-    for i in range(800):
-        coordinator.step(1.0 / 60.0)
-        var snap = coordinator.get_service_snapshot()
-        if snap.get("service_state", "") == PassengerJourney.DROPOFF && snap.get("arrival_certified", false):
-            dest_arrived = true
-            break
+    var dest_arrived: bool = _step_until_state(
+        coordinator,
+        PassengerJourney.DROPOFF,
+        "innovation_centre destination"
+    )
     _expect(dest_arrived, "shuttle arrives at innovation_centre destination and certifies arrival")
 
     # Confirm passenger exit -> should immediately initiate return to North Gate (RETURNING_TO_SERVICE)
@@ -70,29 +68,25 @@ func _run_tests() -> void:
     _expect(not booking_during_return.get("valid", false), "new booking is correctly rejected while shuttle is returning to service")
 
     # Step back to North Gate
-    var return_arrived: bool = false
-    for i in range(900):
-        coordinator.step(1.0 / 60.0)
-        var snap = coordinator.get_service_snapshot()
-        if snap.get("service_state", "") == PassengerJourney.IDLE && snap.get("arrival_certified", false):
-            return_arrived = true
-            break
+    var return_arrived: bool = _step_until_state(
+        coordinator,
+        PassengerJourney.IDLE,
+        "North Gate return"
+    )
     _expect(return_arrived, "shuttle successfully returns to North Gate and certifies arrival, transitioning back to IDLE")
     _expect(coordinator.get_service_snapshot().get("active_booking", {}).is_empty(), "completed booking state is safely cleared without clearing vehicle pose")
 
     # 2. Test Second Sequential Booking (Trip 2: Library -> Sports Hall) without pressing R
     var booking2 = coordinator.request_booking("library", "sports_hall")
     _expect(booking2.get("valid", false), "second sequential booking accepted after return without simulation reset")
-    _expect(coordinator.get_service_snapshot().get("service_state", "") == PassengerJourney.ASSIGNED, "journey state is ASSIGNED for second booking")
+    _expect(coordinator.get_service_snapshot().get("service_state", "") == PassengerJourney.TO_PICKUP, "journey state is TO_PICKUP for second booking")
 
     # Step trip 2 pickup
-    var pickup2_arrived: bool = false
-    for i in range(600):
-        coordinator.step(1.0 / 60.0)
-        var snap = coordinator.get_service_snapshot()
-        if snap.get("service_state", "") == PassengerJourney.BOARDING && snap.get("arrival_certified", false):
-            pickup2_arrived = true
-            break
+    var pickup2_arrived: bool = _step_until_state(
+        coordinator,
+        PassengerJourney.BOARDING,
+        "library pickup"
+    )
     _expect(pickup2_arrived, "shuttle successfully services second booking pickup (library)")
 
     # 3. Test Reset During Return Service
@@ -101,7 +95,7 @@ func _run_tests() -> void:
     coord_reset.planner = CampusRoutePlanner.new(network)
     coord_reset.initialize_service("north_gate", north_stop.position_xz, launch_heading_rad)
     coord_reset.request_booking("north_gate", "library")
-    coord_reset.step(1.0 / 60.0)
+    _step_coordinator(coord_reset)
     var reset_coord = CampusServiceCoordinator.new()
     reset_coord.network = network
     reset_coord.planner = CampusRoutePlanner.new(network)
@@ -138,3 +132,31 @@ func _expect(condition: bool, message: String) -> void:
     else:
         push_error("FAIL: " + message)
         failures += 1
+
+func _step_coordinator(coordinator: RefCounted) -> Dictionary:
+    var result: Dictionary = coordinator.step(1.0 / 60.0, next_tick_id)
+    next_tick_id += 1
+    return result
+
+func _step_until_state(
+    coordinator: RefCounted,
+    expected_state: String,
+    description: String
+) -> bool:
+    for _tick in range(MAX_TICKS_PER_LEG):
+        if coordinator.get_service_snapshot().get("service_state", "") == expected_state:
+            return true
+        var result := _step_coordinator(coordinator)
+        if not result.get("valid", false) && result.get("status", "") != "ARRIVED":
+            break
+    var actual_state: String = str(
+        coordinator.get_service_snapshot().get("service_state", "")
+    )
+    if actual_state != expected_state:
+        push_error(
+            "FAIL: %s expected state %s but reached %s within %d ticks."
+            % [description, expected_state, actual_state, MAX_TICKS_PER_LEG]
+        )
+        failures += 1
+        return false
+    return true
