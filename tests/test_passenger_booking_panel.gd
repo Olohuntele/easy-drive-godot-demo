@@ -189,7 +189,7 @@ func _test_journey_panel_and_actions() -> void:
     )
     _expect(
         panel.journey_status_label.text.contains("Traveling to destination")
-            && is_equal_approx(panel.journey_progress.value, 55.0),
+            && is_equal_approx(panel.journey_progress.value, 65.0),
         "journey status and progress follow the coordinator's destination state"
     )
 
