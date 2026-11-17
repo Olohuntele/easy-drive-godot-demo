@@ -9,6 +9,7 @@ const RouteNavigator = preload("res://scripts/route_navigator.gd")
 const ShuttleDispatcher = preload("res://scripts/shuttle_dispatcher.gd")
 const VehicleDynamics = preload("res://scripts/vehicle_dynamics.gd")
 const RouteObstacle = preload("res://scripts/route_obstacle.gd")
+const OffsetPathBuilder = preload("res://scripts/offset_path_builder.gd")
 
 const POSITION_TOLERANCE_M: float = 1.0
 const ROUTE_SAMPLES_PER_SEGMENT: int = 20
@@ -43,6 +44,9 @@ var coordinator_tick_count: int = 0
 var defer_destination_routing: bool = false
 var defer_return_routing: bool = false
 var active_obstacle: RefCounted = null
+var lane_change_active: bool = false
+var lane_change_wait_elapsed_s: float = 0.0
+var offset_path_builder: RefCounted = null
 
 var _last_physics_tick_id: int = -1
 
@@ -52,6 +56,7 @@ func _init() -> void:
     dynamics = VehicleDynamics.new()
     navigator = RouteNavigator.new()
     controller = RouteFollowingController.new()
+    offset_path_builder = OffsetPathBuilder.new()
     dispatcher = null
     journey = null
 
@@ -163,13 +168,40 @@ func step(delta: float, physics_tick_id: int = -1) -> Dictionary:
             "arrival_certified": false
         })
 
+    var control_obstacle: RefCounted = active_obstacle if not lane_change_active else null
     var control: Dictionary = controller.update(
         dynamics,
         navigator,
         delta,
         false,
-        active_obstacle
+        control_obstacle
     )
+    if not lane_change_active:
+        if bool(control.get("obstacle_hold", false)) \
+            && dynamics.speed_mps <= OffsetPathBuilder.ARRIVAL_SPEED_TOLERANCE_MPS:
+            lane_change_wait_elapsed_s += delta
+            if lane_change_wait_elapsed_s >= OffsetPathBuilder.HOLD_BEFORE_BYPASS_S:
+                var bypass: Dictionary = offset_path_builder.build(
+                    navigator,
+                    network,
+                    Vector2(dynamics.position_x_m, dynamics.position_z_m),
+                    dynamics.heading_rad,
+                    dynamics.speed_mps,
+                    active_obstacle
+                )
+                if bypass.get("valid", false):
+                    var swap := replace_active_route(
+                        bypass.centerline_points,
+                        ROUTE_SAMPLES_PER_SEGMENT,
+                        "lane-bypass",
+                        PackedStringArray(["lane-bypass"])
+                    )
+                    if swap.get("valid", false):
+                        lane_change_active = true
+                        lane_change_wait_elapsed_s = 0.0
+                        control = controller.update(dynamics, navigator, delta, false, null)
+        elif active_obstacle == null || not active_obstacle.active:
+            lane_change_wait_elapsed_s = 0.0
     last_control_result = control.duplicate(true)
     _update_tracking_metrics(control)
     var manual_intervention: bool = bool(control.get("manual_intervention", false))
@@ -306,7 +338,10 @@ func get_service_snapshot() -> Dictionary:
         "last_step_result": last_step_result.duplicate(true),
         "obstacle_hold": bool(last_control_result.get("obstacle_hold", false)),
         "obstacle_distance_m": last_control_result.get("obstacle_distance_m", INF),
-        "obstacle_stop_distance_m": last_control_result.get("obstacle_stop_distance_m", INF)
+        "obstacle_stop_distance_m": last_control_result.get("obstacle_stop_distance_m", INF),
+        "lane_change_active": lane_change_active,
+        "lane_change_wait_elapsed_s": lane_change_wait_elapsed_s,
+        "lane_change_status": "CHANGING LANE" if lane_change_active else ""
     }
 
 func place_obstacle(
@@ -330,6 +365,8 @@ func clear_obstacle() -> Dictionary:
     if active_obstacle != null:
         active_obstacle.active = false
     active_obstacle = null
+    if not lane_change_active:
+        lane_change_wait_elapsed_s = 0.0
     return {"valid": true, "failure_reason": ""}
 
 ## Replaces the active route without changing the coordinator's physical state.
@@ -469,6 +506,8 @@ func _install_active_leg() -> Dictionary:
         current_leg = ""
         current_destination_station_id = ""
         arrival_status = "ARRIVED"
+        lane_change_active = false
+        lane_change_wait_elapsed_s = 0.0
         last_failure_reason = ""
         return installation_request
 

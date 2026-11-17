@@ -733,7 +733,9 @@ func _update_hud() -> void:
         var state = str(snapshot.get("service_state", "IDLE"))
         if state != "IDLE":
             status_str = "SERVICE: " + state
-        if bool(snapshot.get("obstacle_hold", false)):
+        if bool(snapshot.get("lane_change_active", false)):
+            status_str += " | CHANGING LANE"
+        elif bool(snapshot.get("obstacle_hold", false)):
             status_str += " | OBSTACLE AHEAD - HOLDING"
     var cam_str = "OVERVIEW" if camera_mode_overview else "FOLLOW"
     var total_len: float = navigator.total_length_m if navigator else 0.0
