@@ -48,6 +48,7 @@ var lane_change_active: bool = false
 var lane_change_wait_elapsed_s: float = 0.0
 var no_way_hold_active: bool = false
 var offset_path_builder: RefCounted = null
+var road_width_m: float = 4.0
 
 var _last_physics_tick_id: int = -1
 
@@ -188,7 +189,10 @@ func step(delta: float, physics_tick_id: int = -1) -> Dictionary:
                     Vector2(dynamics.position_x_m, dynamics.position_z_m),
                     dynamics.heading_rad,
                     dynamics.speed_mps,
-                    active_obstacle
+                    active_obstacle,
+                    road_width_m,
+                    dynamics.wheelbase_m,
+                    dynamics.steering_limit_rad
                 )
                 if bypass.get("valid", false):
                     var swap := replace_active_route(
@@ -363,7 +367,8 @@ func place_obstacle(
         length_m,
         route_id,
         segment_id,
-        navigator.get_point_at_distance(distance_along_route_m)
+        navigator.get_point_at_distance(distance_along_route_m),
+        1.8
     )
     return {"valid": true, "failure_reason": ""}
 

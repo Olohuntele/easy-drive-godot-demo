@@ -331,7 +331,7 @@ func _place_obstacle_pressed() -> void:
     )
     if obstacle_distance_m <= float(navigation.progress_m):
         return
-    service_coordinator.place_obstacle(obstacle_distance_m, 4.0)
+    service_coordinator.place_obstacle(obstacle_distance_m)
     _update_obstacle_visual(service_coordinator.get_service_snapshot())
 
 func _clear_obstacle_pressed() -> void:
@@ -351,7 +351,7 @@ func _update_obstacle_visual(snapshot: Dictionary) -> void:
         obstacle_visual = MeshInstance3D.new()
         obstacle_visual.name = "RouteObstacle"
         var mesh := BoxMesh.new()
-        mesh.size = Vector3(2.5, 1.0, obstacle.length_m)
+        mesh.size = Vector3(obstacle.width_m, 1.0, obstacle.length_m)
         obstacle_visual.mesh = mesh
         var material := StandardMaterial3D.new()
         material.albedo_color = Color(0.82, 0.05, 0.04, 1.0)

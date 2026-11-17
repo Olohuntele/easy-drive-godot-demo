@@ -11,7 +11,7 @@ const DEFAULT_BRAKING_MARGIN_M: float = 0.25
 ## Maximum route distance at which an active obstacle creates a temporary hold.
 const DETECTION_RANGE_M: float = 30.0
 ## Required route gap between the shuttle and the obstacle's leading edge.
-const STOP_GAP_M: float = 6.0
+const STOP_GAP_M: float = 11.0
 
 var navigation_speed_mps: float = DEFAULT_NAVIGATION_SPEED_MPS
 var lookahead_distance_m: float = DEFAULT_LOOKAHEAD_DISTANCE_M

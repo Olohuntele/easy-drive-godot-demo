@@ -6,6 +6,7 @@ var segment_id: String = ""
 var distance_along_route_m: float = 0.0
 var length_m: float = 0.0
 var world_position_xz: Vector2 = Vector2.ZERO
+var width_m: float = 1.8
 var active: bool = true
 
 func _init(
@@ -13,13 +14,15 @@ func _init(
     obstacle_length_m: float = 4.0,
     obstacle_route_id: String = "",
     obstacle_segment_id: String = "",
-    obstacle_world_position_xz: Vector2 = Vector2.ZERO
+    obstacle_world_position_xz: Vector2 = Vector2.ZERO,
+    obstacle_width_m: float = 1.8
 ) -> void:
     distance_along_route_m = obstacle_distance_m
     length_m = obstacle_length_m
     route_id = obstacle_route_id
     segment_id = obstacle_segment_id
     world_position_xz = obstacle_world_position_xz
+    width_m = obstacle_width_m
 
 func duplicate_obstacle() -> RefCounted:
     var copy: RefCounted = get_script().new(
@@ -27,7 +30,8 @@ func duplicate_obstacle() -> RefCounted:
         length_m,
         route_id,
         segment_id,
-        world_position_xz
+        world_position_xz,
+        width_m
     )
     copy.active = active
     return copy
