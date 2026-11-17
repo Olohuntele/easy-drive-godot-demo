@@ -1,5 +1,7 @@
 extends RefCounted
 
+const RoadDimensions = preload("res://scripts/road_dimensions.gd")
+
 const VEHICLE_WIDTH_M: float = 1.8
 const VEHICLE_LENGTH_M: float = 3.7
 const LATERAL_MARGIN_M: float = 0.3
@@ -22,7 +24,7 @@ func build(
     vehicle_heading_rad: float,
     vehicle_speed_mps: float,
     obstacle: RefCounted,
-    road_width_m: float = 4.0,
+    road_width_m: float = RoadDimensions.ROAD_WIDTH_M,
     wheelbase_m: float = DEFAULT_WHEELBASE_M,
     steering_limit_rad: float = DEFAULT_STEERING_LIMIT_RAD
 ) -> Dictionary:

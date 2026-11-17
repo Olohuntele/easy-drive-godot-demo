@@ -7,12 +7,13 @@ const RouteFollowingController = preload("res://scripts/route_following_controll
 const CampusServiceCoordinator = preload("res://scripts/campus_service_coordinator.gd")
 const CampusRouteMap = preload("res://scripts/campus_route_map.gd")
 const PassengerBookingPanel = preload("res://scripts/passenger_booking_panel.gd")
+const RoadDimensions = preload("res://scripts/road_dimensions.gd")
 
 const ROUTE_LEFT: String = "LEFT"
 const ROUTE_RIGHT: String = "RIGHT"
 const ROUTE_S_CURVE: String = "S-CURVE"
-const ROUTE_ROAD_HALF_WIDTH_M: float = 4.0
-const ROUTE_BOUNDARY_OFFSET_M: float = 3.82
+const ROUTE_ROAD_WIDTH_M: float = RoadDimensions.ROAD_WIDTH_M
+const ROUTE_BOUNDARY_OFFSET_M: float = ROUTE_ROAD_WIDTH_M * 0.5 - 0.18
 const ROUTE_BOUNDARY_WIDTH_M: float = 0.16
 const ROUTE_CENTERLINE_WIDTH_M: float = 0.12
 const MODE4_CAMERA_POSITION_RESPONSE: float = 8.0
@@ -779,7 +780,12 @@ func _update_route_visuals(centerline_samples: PackedVector2Array) -> void:
         centerline_instance.material_override = _route_material(Color(1.0, 0.78, 0.16, 1.0))
         route_visual_root.add_child(centerline_instance)
 
-    route_surface_mesh = _make_route_strip_mesh(centerline_samples, 0.0, ROUTE_ROAD_HALF_WIDTH_M * 2.0, 0.055)
+    route_surface_mesh = _make_route_strip_mesh(
+        centerline_samples,
+        0.0,
+        ROUTE_ROAD_WIDTH_M,
+        0.055
+    )
     route_left_boundary_mesh = _make_route_strip_mesh(
         centerline_samples,
         -ROUTE_BOUNDARY_OFFSET_M,

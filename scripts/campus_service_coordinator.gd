@@ -10,6 +10,7 @@ const ShuttleDispatcher = preload("res://scripts/shuttle_dispatcher.gd")
 const VehicleDynamics = preload("res://scripts/vehicle_dynamics.gd")
 const RouteObstacle = preload("res://scripts/route_obstacle.gd")
 const OffsetPathBuilder = preload("res://scripts/offset_path_builder.gd")
+const RoadDimensions = preload("res://scripts/road_dimensions.gd")
 
 const POSITION_TOLERANCE_M: float = 1.0
 const ROUTE_SAMPLES_PER_SEGMENT: int = 20
@@ -48,7 +49,7 @@ var lane_change_active: bool = false
 var lane_change_wait_elapsed_s: float = 0.0
 var no_way_hold_active: bool = false
 var offset_path_builder: RefCounted = null
-var road_width_m: float = 4.0
+var road_width_m: float = RoadDimensions.ROAD_WIDTH_M
 
 var _last_physics_tick_id: int = -1
 

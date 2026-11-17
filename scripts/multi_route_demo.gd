@@ -4,6 +4,7 @@ const CampusMultiRouteNetwork = preload("res://scripts/campus_multi_route_networ
 const CampusRoutePlanner = preload("res://scripts/campus_route_planner.gd")
 const RouteNavigator = preload("res://scripts/route_navigator.gd")
 const VehicleDynamics = preload("res://scripts/vehicle_dynamics.gd")
+const RoadDimensions = preload("res://scripts/road_dimensions.gd")
 const CampusServiceCoordinator = preload("res://scripts/campus_service_coordinator.gd")
 const PassengerBookingPanel = preload("res://scripts/passenger_booking_panel.gd")
 const RouteFollowingController = preload("res://scripts/route_following_controller.gd")
@@ -454,8 +455,8 @@ func _build_network_visuals() -> void:
         var pos: Vector2 = node.position_xz
         var cyl = MeshInstance3D.new()
         var cyl_mesh = CylinderMesh.new()
-        cyl_mesh.top_radius = 2.0
-        cyl_mesh.bottom_radius = 2.0
+        cyl_mesh.top_radius = RoadDimensions.ROAD_WIDTH_M * 0.5 + 0.3
+        cyl_mesh.bottom_radius = RoadDimensions.ROAD_WIDTH_M * 0.5 + 0.3
         cyl_mesh.height = 0.02
         cyl.mesh = cyl_mesh
         cyl.material_override = junction_mat
@@ -478,7 +479,12 @@ func _build_network_visuals() -> void:
         if points.size() < 2:
             continue
 
-        var road_mesh = _make_route_strip_mesh(points, 0.0, 4.0, 0.025)
+        var road_mesh = _make_route_strip_mesh(
+            points,
+            0.0,
+            RoadDimensions.ROAD_WIDTH_M,
+            0.025
+        )
         var road_instance = MeshInstance3D.new()
         road_instance.mesh = road_mesh
         road_instance.material_override = asphalt_mat
@@ -550,7 +556,12 @@ func _build_campus_scenery() -> void:
 
     for station in network.get_stations():
         var pos: Vector2 = station.stop_position_xz
-        var shelter_pos = Vector3(pos.x + 3.5, 0.0, pos.y + 3.5)
+        var shelter_offset_m: float = RoadDimensions.ROAD_WIDTH_M * 0.5 + 2.2
+        var shelter_pos = Vector3(
+            pos.x + shelter_offset_m,
+            0.0,
+            pos.y + shelter_offset_m
+        )
 
         var roof = MeshInstance3D.new()
         var rmesh = BoxMesh.new()
@@ -597,7 +608,11 @@ func _build_campus_scenery() -> void:
         wmat.albedo_color = Color(0.6, 0.62, 0.65, 1.0)
         wmat.cull_mode = BaseMaterial3D.CULL_DISABLED
         walk.material_override = wmat
-        walk.position = Vector3(pos.x + 1.7, 0.02, pos.y + 1.7)
+        walk.position = Vector3(
+            pos.x + shelter_offset_m * 0.5,
+            0.02,
+            pos.y + shelter_offset_m * 0.5
+        )
         scenery_root.add_child(walk)
 
     var tree_positions = [

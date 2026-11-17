@@ -5,6 +5,7 @@ const CampusRoutePlanner = preload("res://scripts/campus_route_planner.gd")
 const RouteFollowingController = preload("res://scripts/route_following_controller.gd")
 const RouteNavigator = preload("res://scripts/route_navigator.gd")
 const VehicleDynamics = preload("res://scripts/vehicle_dynamics.gd")
+const RoadDimensions = preload("res://scripts/road_dimensions.gd")
 
 const FIXED_DELTA: float = 1.0 / 60.0
 const MAX_SIMULATION_TICKS: int = 12000
@@ -22,7 +23,7 @@ const MAX_SIMULATION_TICKS: int = 12000
 const ANALYSIS_VEHICLE_LENGTH_M: float = 3.5
 const ANALYSIS_VEHICLE_WIDTH_M: float = 1.6
 const ANALYSIS_WHEELBASE_M: float = 2.3
-const ANALYSIS_ROAD_WIDTH_M: float = 4.0
+const ANALYSIS_ROAD_WIDTH_M: float = RoadDimensions.ROAD_WIDTH_M
 const ANALYSIS_ROAD_HALF_WIDTH_M: float = ANALYSIS_ROAD_WIDTH_M / 2.0
 const ANALYSIS_LATERAL_ACCEL_LIMIT_MPS2: float = 1.5
 

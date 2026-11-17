@@ -132,6 +132,7 @@ func _test_valid_lane_change() -> void:
 
 func _test_default_road_rejects_bypass() -> void:
     var coordinator := _new_coordinator()
+    coordinator.road_width_m = 4.0
     _expect(
         coordinator.request_booking("sports_hall", "innovation_centre").get("valid", false),
         "default-width scenario installs a pickup route"
