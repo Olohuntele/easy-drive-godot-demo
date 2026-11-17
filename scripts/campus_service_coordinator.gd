@@ -209,6 +209,13 @@ func step(delta: float, physics_tick_id: int = -1) -> Dictionary:
                         control = controller.update(dynamics, navigator, delta, false, null)
                 else:
                     no_way_hold_active = true
+                    control = controller.update(
+                        dynamics,
+                        navigator,
+                        delta,
+                        false,
+                        active_obstacle
+                    )
         elif active_obstacle == null || not active_obstacle.active:
             lane_change_wait_elapsed_s = 0.0
             no_way_hold_active = false
@@ -359,17 +366,30 @@ func place_obstacle(
     distance_along_route_m: float,
     length_m: float = 4.0,
     route_id: String = "",
-    segment_id: String = ""
+    segment_id: String = "",
+    width_m: float = 1.8
 ) -> Dictionary:
     if not is_finite(distance_along_route_m) || not is_finite(length_m) || length_m < 0.0:
         return _failure("invalid_obstacle_data")
+    var obstacle_position: Vector2 = navigator.get_point_at_distance(distance_along_route_m)
+    var before_position: Vector2 = navigator.get_point_at_distance(
+        maxf(distance_along_route_m - 0.1, 0.0)
+    )
+    var after_position: Vector2 = navigator.get_point_at_distance(
+        minf(distance_along_route_m + 0.1, navigator.total_length_m)
+    )
+    var obstacle_heading_rad: float = 0.0
+    if after_position != before_position:
+        var obstacle_tangent: Vector2 = (after_position - before_position).normalized()
+        obstacle_heading_rad = atan2(obstacle_tangent.x, obstacle_tangent.y)
     active_obstacle = RouteObstacle.new(
         distance_along_route_m,
         length_m,
         route_id,
         segment_id,
-        navigator.get_point_at_distance(distance_along_route_m),
-        1.8
+        obstacle_position,
+        width_m,
+        obstacle_heading_rad
     )
     return {"valid": true, "failure_reason": ""}
 

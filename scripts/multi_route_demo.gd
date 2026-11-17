@@ -359,21 +359,12 @@ func _update_obstacle_visual(snapshot: Dictionary) -> void:
         material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
         obstacle_visual.material_override = material
         road_root.add_child(obstacle_visual)
-    var point: Vector2 = service_coordinator.navigator.get_point_at_distance(
-        obstacle.distance_along_route_m
+    obstacle_visual.position = Vector3(
+        obstacle.world_position_xz.x,
+        0.7,
+        obstacle.world_position_xz.y
     )
-    var before: Vector2 = service_coordinator.navigator.get_point_at_distance(
-        maxf(obstacle.distance_along_route_m - 0.1, 0.0)
-    )
-    var after: Vector2 = service_coordinator.navigator.get_point_at_distance(
-        minf(
-            obstacle.distance_along_route_m + 0.1,
-            service_coordinator.navigator.total_length_m
-        )
-    )
-    var tangent: Vector2 = (after - before).normalized()
-    obstacle_visual.position = Vector3(point.x, 0.7, point.y)
-    obstacle_visual.rotation.y = atan2(tangent.x, tangent.y)
+    obstacle_visual.rotation.y = obstacle.world_heading_rad
     obstacle_visual.visible = true
 
 func _reset_simulation() -> void:

@@ -196,9 +196,12 @@ func build(
             "required_offset_m": required_offset_m,
             "bypass_offset_m": bypass_offset_m
         }
-    var obstacle_tangent: Vector2 = _route_tangent(route_navigator, obstacle_distance_m)
+    var obstacle_tangent: Vector2 = Vector2(
+        sin(obstacle.world_heading_rad),
+        cos(obstacle.world_heading_rad)
+    ).normalized()
     var obstacle_right := Vector2(obstacle_tangent.y, -obstacle_tangent.x)
-    var obstacle_center: Vector2 = route_navigator.get_point_at_distance(obstacle_distance_m)
+    var obstacle_center: Vector2 = obstacle.world_position_xz
     var obstacle_rectangle := _rectangle(
         obstacle_center,
         obstacle_tangent,
