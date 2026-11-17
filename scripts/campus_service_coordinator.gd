@@ -8,6 +8,7 @@ const RouteFollowingController = preload("res://scripts/route_following_controll
 const RouteNavigator = preload("res://scripts/route_navigator.gd")
 const ShuttleDispatcher = preload("res://scripts/shuttle_dispatcher.gd")
 const VehicleDynamics = preload("res://scripts/vehicle_dynamics.gd")
+const RouteObstacle = preload("res://scripts/route_obstacle.gd")
 
 const POSITION_TOLERANCE_M: float = 1.0
 const ROUTE_SAMPLES_PER_SEGMENT: int = 20
@@ -39,6 +40,7 @@ var dynamics_step_count: int = 0
 var coordinator_tick_count: int = 0
 var defer_destination_routing: bool = false
 var defer_return_routing: bool = false
+var active_obstacle: RefCounted = null
 
 var _last_physics_tick_id: int = -1
 
@@ -159,7 +161,13 @@ func step(delta: float, physics_tick_id: int = -1) -> Dictionary:
             "arrival_certified": false
         })
 
-    var control: Dictionary = controller.update(dynamics, navigator, delta)
+    var control: Dictionary = controller.update(
+        dynamics,
+        navigator,
+        delta,
+        false,
+        active_obstacle
+    )
     last_control_result = control.duplicate(true)
     _update_tracking_metrics(control)
     var manual_intervention: bool = bool(control.get("manual_intervention", false))
@@ -293,8 +301,33 @@ func get_service_snapshot() -> Dictionary:
         "dynamics_step_count": dynamics_step_count,
         "coordinator_tick_count": coordinator_tick_count,
         "last_control_result": last_control_result.duplicate(true),
-        "last_step_result": last_step_result.duplicate(true)
+        "last_step_result": last_step_result.duplicate(true),
+        "obstacle_hold": bool(last_control_result.get("obstacle_hold", false)),
+        "obstacle_distance_m": last_control_result.get("obstacle_distance_m", INF),
+        "obstacle_stop_distance_m": last_control_result.get("obstacle_stop_distance_m", INF)
     }
+
+func place_obstacle(
+    distance_along_route_m: float,
+    length_m: float = 4.0,
+    route_id: String = "",
+    segment_id: String = ""
+) -> Dictionary:
+    if not is_finite(distance_along_route_m) || not is_finite(length_m) || length_m < 0.0:
+        return _failure("invalid_obstacle_data")
+    active_obstacle = RouteObstacle.new(
+        distance_along_route_m,
+        length_m,
+        route_id,
+        segment_id
+    )
+    return {"valid": true, "failure_reason": ""}
+
+func clear_obstacle() -> Dictionary:
+    if active_obstacle != null:
+        active_obstacle.active = false
+    active_obstacle = null
+    return {"valid": true, "failure_reason": ""}
 
 func _install_active_leg() -> Dictionary:
     var booking: Dictionary = journey.get_active_booking()

@@ -3,10 +3,10 @@ extends Node3D
 const CampusMultiRouteNetwork = preload("res://scripts/campus_multi_route_network.gd")
 const CampusRoutePlanner = preload("res://scripts/campus_route_planner.gd")
 const RouteNavigator = preload("res://scripts/route_navigator.gd")
-const RouteFollowingController = preload("res://scripts/route_following_controller.gd")
 const VehicleDynamics = preload("res://scripts/vehicle_dynamics.gd")
 const CampusServiceCoordinator = preload("res://scripts/campus_service_coordinator.gd")
 const PassengerBookingPanel = preload("res://scripts/passenger_booking_panel.gd")
+const RouteFollowingController = preload("res://scripts/route_following_controller.gd")
 
 const FIXED_DELTA: float = 1.0 / 60.0
 
@@ -71,6 +71,10 @@ var controller = RouteFollowingController.new()
 
 var service_coordinator: RefCounted = null
 var booking_panel: Control = null
+var obstacle_controls: VBoxContainer = null
+var place_obstacle_button: Button = null
+var clear_obstacle_button: Button = null
+var obstacle_visual: MeshInstance3D = null
 
 var active_route_index: int = 1
 var simulation_running: bool = true
@@ -114,6 +118,7 @@ func _ready() -> void:
     booking_panel.booking_requested.connect(_on_passenger_booking_requested)
     booking_panel.boarding_requested.connect(_on_passenger_boarding_requested)
     booking_panel.passenger_exit_requested.connect(_on_passenger_passenger_exit_requested)
+    _build_obstacle_controls()
 
     _build_network_visuals()
     _select_route(1)
@@ -179,6 +184,7 @@ func _physics_process(delta: float) -> void:
 
         if booking_panel:
             booking_panel.update_service_snapshot(snapshot)
+        _update_obstacle_visual(snapshot)
         return
 
     if not route_active:
@@ -287,7 +293,93 @@ func _on_passenger_passenger_exit_requested() -> void:
         booking_panel.show_action_result("exit", result, snapshot)
         booking_panel.update_service_snapshot(snapshot)
 
+func _build_obstacle_controls() -> void:
+    obstacle_controls = VBoxContainer.new()
+    obstacle_controls.name = "ObstacleControls"
+    obstacle_controls.anchor_left = 1.0
+    obstacle_controls.anchor_right = 1.0
+    obstacle_controls.offset_left = -500.0
+    obstacle_controls.offset_right = -326.0
+    obstacle_controls.offset_top = 300.0
+    obstacle_controls.offset_bottom = 380.0
+    obstacle_controls.add_theme_constant_override("separation", 5)
+    canvas_layer.add_child(obstacle_controls)
+
+    place_obstacle_button = Button.new()
+    place_obstacle_button.text = "Place obstacle"
+    place_obstacle_button.pressed.connect(_place_obstacle_pressed)
+    obstacle_controls.add_child(place_obstacle_button)
+
+    clear_obstacle_button = Button.new()
+    clear_obstacle_button.text = "Clear obstacle"
+    clear_obstacle_button.pressed.connect(_clear_obstacle_pressed)
+    obstacle_controls.add_child(clear_obstacle_button)
+
+func _place_obstacle_pressed() -> void:
+    if service_coordinator == null || not service_coordinator.navigator.route_valid:
+        return
+    var navigation: Dictionary = service_coordinator.navigator.find_nearest_point(
+        service_coordinator.get_service_snapshot().position_xz
+    )
+    if not navigation.get("valid", false):
+        return
+    var obstacle_distance_m: float = minf(
+        float(navigation.progress_m) + 18.0,
+        service_coordinator.navigator.total_length_m
+            - RouteFollowingController.STOP_GAP_M
+            - 0.5
+    )
+    if obstacle_distance_m <= float(navigation.progress_m):
+        return
+    service_coordinator.place_obstacle(obstacle_distance_m, 4.0)
+    _update_obstacle_visual(service_coordinator.get_service_snapshot())
+
+func _clear_obstacle_pressed() -> void:
+    if service_coordinator == null:
+        return
+    service_coordinator.clear_obstacle()
+    _update_obstacle_visual(service_coordinator.get_service_snapshot())
+
+func _update_obstacle_visual(snapshot: Dictionary) -> void:
+    var obstacle: RefCounted = service_coordinator.active_obstacle \
+        if service_coordinator != null else null
+    if obstacle == null || not obstacle.active || not service_coordinator.navigator.route_valid:
+        if obstacle_visual:
+            obstacle_visual.visible = false
+        return
+    if obstacle_visual == null:
+        obstacle_visual = MeshInstance3D.new()
+        obstacle_visual.name = "RouteObstacle"
+        var mesh := BoxMesh.new()
+        mesh.size = Vector3(2.5, 1.0, obstacle.length_m)
+        obstacle_visual.mesh = mesh
+        var material := StandardMaterial3D.new()
+        material.albedo_color = Color(0.82, 0.05, 0.04, 1.0)
+        material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+        obstacle_visual.material_override = material
+        road_root.add_child(obstacle_visual)
+    var point: Vector2 = service_coordinator.navigator.get_point_at_distance(
+        obstacle.distance_along_route_m
+    )
+    var before: Vector2 = service_coordinator.navigator.get_point_at_distance(
+        maxf(obstacle.distance_along_route_m - 0.1, 0.0)
+    )
+    var after: Vector2 = service_coordinator.navigator.get_point_at_distance(
+        minf(
+            obstacle.distance_along_route_m + 0.1,
+            service_coordinator.navigator.total_length_m
+        )
+    )
+    var tangent: Vector2 = (after - before).normalized()
+    obstacle_visual.position = Vector3(point.x, 0.7, point.y)
+    obstacle_visual.rotation.y = atan2(tangent.x, tangent.y)
+    obstacle_visual.visible = true
+
 func _reset_simulation() -> void:
+    if service_coordinator != null:
+        service_coordinator.clear_obstacle()
+    if obstacle_visual:
+        obstacle_visual.visible = false
     if service_coordinator != null:
         var north_stop = network.get_station_stop("north_gate")
         var launch_segment: Dictionary = network.get_segment("north_to_east")
@@ -637,9 +729,12 @@ func _update_hud() -> void:
         return
     var status_str = "RUNNING" if simulation_running else "PAUSED"
     if service_coordinator != null:
-        var state = str(service_coordinator.get_service_snapshot().get("service_state", "IDLE"))
+        var snapshot: Dictionary = service_coordinator.get_service_snapshot()
+        var state = str(snapshot.get("service_state", "IDLE"))
         if state != "IDLE":
             status_str = "SERVICE: " + state
+        if bool(snapshot.get("obstacle_hold", false)):
+            status_str += " | OBSTACLE AHEAD - HOLDING"
     var cam_str = "OVERVIEW" if camera_mode_overview else "FOLLOW"
     var total_len: float = navigator.total_length_m if navigator else 0.0
     var text = (
