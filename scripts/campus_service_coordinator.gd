@@ -46,6 +46,7 @@ var defer_return_routing: bool = false
 var active_obstacle: RefCounted = null
 var lane_change_active: bool = false
 var lane_change_wait_elapsed_s: float = 0.0
+var no_way_hold_active: bool = false
 var offset_path_builder: RefCounted = null
 
 var _last_physics_tick_id: int = -1
@@ -199,9 +200,13 @@ func step(delta: float, physics_tick_id: int = -1) -> Dictionary:
                     if swap.get("valid", false):
                         lane_change_active = true
                         lane_change_wait_elapsed_s = 0.0
+                        no_way_hold_active = false
                         control = controller.update(dynamics, navigator, delta, false, null)
+                else:
+                    no_way_hold_active = true
         elif active_obstacle == null || not active_obstacle.active:
             lane_change_wait_elapsed_s = 0.0
+            no_way_hold_active = false
     last_control_result = control.duplicate(true)
     _update_tracking_metrics(control)
     var manual_intervention: bool = bool(control.get("manual_intervention", false))
@@ -341,7 +346,8 @@ func get_service_snapshot() -> Dictionary:
         "obstacle_stop_distance_m": last_control_result.get("obstacle_stop_distance_m", INF),
         "lane_change_active": lane_change_active,
         "lane_change_wait_elapsed_s": lane_change_wait_elapsed_s,
-        "lane_change_status": "CHANGING LANE" if lane_change_active else ""
+        "lane_change_status": "CHANGING LANE" if lane_change_active else "",
+        "no_way_hold_active": no_way_hold_active
     }
 
 func place_obstacle(
@@ -367,6 +373,7 @@ func clear_obstacle() -> Dictionary:
     active_obstacle = null
     if not lane_change_active:
         lane_change_wait_elapsed_s = 0.0
+        no_way_hold_active = false
     return {"valid": true, "failure_reason": ""}
 
 ## Replaces the active route without changing the coordinator's physical state.
@@ -508,6 +515,7 @@ func _install_active_leg() -> Dictionary:
         arrival_status = "ARRIVED"
         lane_change_active = false
         lane_change_wait_elapsed_s = 0.0
+        no_way_hold_active = false
         last_failure_reason = ""
         return installation_request
 

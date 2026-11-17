@@ -735,6 +735,8 @@ func _update_hud() -> void:
             status_str = "SERVICE: " + state
         if bool(snapshot.get("lane_change_active", false)):
             status_str += " | CHANGING LANE"
+        elif bool(snapshot.get("no_way_hold_active", false)):
+            status_str += " | NO CLEAR PATH - WAITING"
         elif bool(snapshot.get("obstacle_hold", false)):
             status_str += " | OBSTACLE AHEAD - HOLDING"
     var cam_str = "OVERVIEW" if camera_mode_overview else "FOLLOW"
