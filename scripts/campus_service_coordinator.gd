@@ -12,6 +12,8 @@ const RouteObstacle = preload("res://scripts/route_obstacle.gd")
 
 const POSITION_TOLERANCE_M: float = 1.0
 const ROUTE_SAMPLES_PER_SEGMENT: int = 20
+const ROUTE_SWAP_POSE_TOLERANCE_M: float = 0.0001
+const ROUTE_SWAP_HEADING_TOLERANCE_RAD: float = deg_to_rad(12.0)
 
 var network: RefCounted
 var planner: RefCounted
@@ -319,7 +321,8 @@ func place_obstacle(
         distance_along_route_m,
         length_m,
         route_id,
-        segment_id
+        segment_id,
+        navigator.get_point_at_distance(distance_along_route_m)
     )
     return {"valid": true, "failure_reason": ""}
 
@@ -328,6 +331,83 @@ func clear_obstacle() -> Dictionary:
         active_obstacle.active = false
     active_obstacle = null
     return {"valid": true, "failure_reason": ""}
+
+## Replaces the active route without changing the coordinator's physical state.
+## The replacement route must begin at the current pose and match its heading.
+func replace_active_route(
+    centerline_points: Array[Vector2],
+    samples_per_segment: int = ROUTE_SAMPLES_PER_SEGMENT,
+    route_id: String = "",
+    segment_ids: PackedStringArray = PackedStringArray()
+) -> Dictionary:
+    if not initialized:
+        return _failure("service_not_initialized")
+    if not _is_moving_state(journey.state):
+        return _failure("route_swap_not_allowed_in_current_state")
+    if centerline_points.size() < 2:
+        return _failure("route_swap_centerline_invalid")
+    if samples_per_segment < 1:
+        return _failure("route_swap_samples_invalid")
+
+    var current_position := Vector2(dynamics.position_x_m, dynamics.position_z_m)
+    var current_heading: float = dynamics.heading_rad
+    var current_speed: float = dynamics.speed_mps
+    if not current_position.is_finite() || not is_finite(current_heading) \
+        || not is_finite(current_speed) || current_speed < 0.0:
+        return _failure("route_swap_invalid_vehicle_state")
+    if centerline_points[0].distance_to(current_position) > ROUTE_SWAP_POSE_TOLERANCE_M:
+        return _failure("route_swap_start_pose_incompatible")
+    var first_edge: Vector2 = centerline_points[1] - centerline_points[0]
+    if first_edge.length_squared() <= 0.000001:
+        return _failure("route_swap_start_tangent_invalid")
+    var expected_heading: float = atan2(first_edge.x, first_edge.y)
+    var heading_error: float = absf(wrapf(
+        current_heading - expected_heading,
+        -PI,
+        PI
+    ))
+    if heading_error > ROUTE_SWAP_HEADING_TOLERANCE_RAD:
+        return _failure("route_swap_start_heading_incompatible")
+
+    var candidate_navigator := RouteNavigator.new()
+    if not candidate_navigator.set_route(centerline_points, samples_per_segment):
+        return _failure("route_swap_route_invalid")
+    var projected_obstacle_distance: float = -1.0
+    if active_obstacle != null && active_obstacle.active:
+        var obstacle_projection: Dictionary = candidate_navigator.find_nearest_point(
+            active_obstacle.world_position_xz,
+            true
+        )
+        if not obstacle_projection.get("valid", false):
+            return _failure("route_swap_obstacle_projection_failed")
+        projected_obstacle_distance = float(obstacle_projection.progress_m)
+
+    var pose_before := current_position
+    var heading_before: float = current_heading
+    var speed_before: float = current_speed
+    if not navigator.set_route(centerline_points, samples_per_segment):
+        return _failure("route_swap_installation_failed")
+    controller.reset()
+    var pose_after := Vector2(dynamics.position_x_m, dynamics.position_z_m)
+    var heading_after: float = dynamics.heading_rad
+    var speed_after: float = dynamics.speed_mps
+    if pose_before.distance_to(pose_after) > ROUTE_SWAP_POSE_TOLERANCE_M \
+        || absf(wrapf(heading_before - heading_after, -PI, PI)) > 0.000001 \
+        || absf(speed_before - speed_after) > 0.0001:
+        return _failure("route_swap_changed_vehicle_state")
+    if active_obstacle != null && active_obstacle.active:
+        active_obstacle.distance_along_route_m = projected_obstacle_distance
+        active_obstacle.route_id = route_id
+        active_obstacle.segment_id = str(segment_ids)
+    return {
+        "valid": true,
+        "failure_reason": "",
+        "state": journey.state,
+        "route_id": route_id,
+        "segment_ids": segment_ids.duplicate(),
+        "obstacle_reprojected": projected_obstacle_distance >= 0.0,
+        "obstacle_distance_along_route_m": projected_obstacle_distance
+    }
 
 func _install_active_leg() -> Dictionary:
     var booking: Dictionary = journey.get_active_booking()
