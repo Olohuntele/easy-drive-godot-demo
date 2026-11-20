@@ -8,9 +8,14 @@ const RouteFollowingController = preload("res://scripts/route_following_controll
 const RouteNavigator = preload("res://scripts/route_navigator.gd")
 const ShuttleDispatcher = preload("res://scripts/shuttle_dispatcher.gd")
 const VehicleDynamics = preload("res://scripts/vehicle_dynamics.gd")
+const RouteObstacle = preload("res://scripts/route_obstacle.gd")
+const OffsetPathBuilder = preload("res://scripts/offset_path_builder.gd")
+const RoadDimensions = preload("res://scripts/road_dimensions.gd")
 
 const POSITION_TOLERANCE_M: float = 1.0
 const ROUTE_SAMPLES_PER_SEGMENT: int = 20
+const ROUTE_SWAP_POSE_TOLERANCE_M: float = 0.0001
+const ROUTE_SWAP_HEADING_TOLERANCE_RAD: float = deg_to_rad(12.0)
 
 var network: RefCounted
 var planner: RefCounted
@@ -37,6 +42,14 @@ var maximum_route_handoff_position_delta_m: float = 0.0
 var maximum_route_handoff_heading_delta_rad: float = 0.0
 var dynamics_step_count: int = 0
 var coordinator_tick_count: int = 0
+var defer_destination_routing: bool = false
+var defer_return_routing: bool = false
+var active_obstacle: RefCounted = null
+var lane_change_active: bool = false
+var lane_change_wait_elapsed_s: float = 0.0
+var no_way_hold_active: bool = false
+var offset_path_builder: RefCounted = null
+var road_width_m: float = RoadDimensions.ROAD_WIDTH_M
 
 var _last_physics_tick_id: int = -1
 
@@ -46,6 +59,7 @@ func _init() -> void:
     dynamics = VehicleDynamics.new()
     navigator = RouteNavigator.new()
     controller = RouteFollowingController.new()
+    offset_path_builder = OffsetPathBuilder.new()
     dispatcher = null
     journey = null
 
@@ -157,7 +171,54 @@ func step(delta: float, physics_tick_id: int = -1) -> Dictionary:
             "arrival_certified": false
         })
 
-    var control: Dictionary = controller.update(dynamics, navigator, delta)
+    var control_obstacle: RefCounted = active_obstacle if not lane_change_active else null
+    var control: Dictionary = controller.update(
+        dynamics,
+        navigator,
+        delta,
+        false,
+        control_obstacle
+    )
+    if not lane_change_active:
+        if bool(control.get("obstacle_hold", false)) \
+            && dynamics.speed_mps <= OffsetPathBuilder.ARRIVAL_SPEED_TOLERANCE_MPS:
+            lane_change_wait_elapsed_s += delta
+            if lane_change_wait_elapsed_s >= OffsetPathBuilder.HOLD_BEFORE_BYPASS_S:
+                var bypass: Dictionary = offset_path_builder.build(
+                    navigator,
+                    network,
+                    Vector2(dynamics.position_x_m, dynamics.position_z_m),
+                    dynamics.heading_rad,
+                    dynamics.speed_mps,
+                    active_obstacle,
+                    road_width_m,
+                    dynamics.wheelbase_m,
+                    dynamics.steering_limit_rad
+                )
+                if bypass.get("valid", false):
+                    var swap := replace_active_route(
+                        bypass.centerline_points,
+                        ROUTE_SAMPLES_PER_SEGMENT,
+                        "lane-bypass",
+                        PackedStringArray(["lane-bypass"])
+                    )
+                    if swap.get("valid", false):
+                        lane_change_active = true
+                        lane_change_wait_elapsed_s = 0.0
+                        no_way_hold_active = false
+                        control = controller.update(dynamics, navigator, delta, false, null)
+                else:
+                    no_way_hold_active = true
+                    control = controller.update(
+                        dynamics,
+                        navigator,
+                        delta,
+                        false,
+                        active_obstacle
+                    )
+        elif active_obstacle == null || not active_obstacle.active:
+            lane_change_wait_elapsed_s = 0.0
+            no_way_hold_active = false
     last_control_result = control.duplicate(true)
     _update_tracking_metrics(control)
     var manual_intervention: bool = bool(control.get("manual_intervention", false))
@@ -233,6 +294,10 @@ func confirm_boarding() -> Dictionary:
         last_failure_reason = str(result.get("failure_reason", "boarding_confirmation_failed"))
         return result
     last_failure_reason = ""
+    if defer_destination_routing:
+        navigator.clear_route()
+        current_leg = "boarding_confirmed"
+        return {"valid": true, "failure_reason": "", "state": journey.state, "boarding_confirmed": true}
     var installation: Dictionary = _install_active_leg()
     if not installation.get("valid", false):
         return installation
@@ -247,6 +312,10 @@ func confirm_passenger_exit() -> Dictionary:
         last_failure_reason = str(result.get("failure_reason", "passenger_exit_failed"))
         return result
     last_failure_reason = ""
+    if defer_return_routing:
+        navigator.clear_route()
+        current_leg = "dropoff_confirmed"
+        return {"valid": true, "failure_reason": "", "state": journey.state, "exit_confirmed": true}
     var installation: Dictionary = _install_active_leg()
     if not installation.get("valid", false):
         return installation
@@ -268,6 +337,8 @@ func get_service_snapshot() -> Dictionary:
         "speed_mps": dynamics.speed_mps,
         "arrival_status": arrival_status,
         "arrival_certified": arrival_status == "ARRIVED",
+        "boarding_confirmed": journey != null && journey.has_method("is_boarding_confirmed") && journey.is_boarding_confirmed(),
+        "exit_confirmed": journey != null && journey.has_method("is_passenger_exit_confirmed") && journey.is_passenger_exit_confirmed(),
         "blocked": journey != null && journey.state == PassengerJourney.BLOCKED,
         "blocked_reason": blocked_reason if not blocked_reason.is_empty()
             else (journey.blocked_reason if journey != null else ""),
@@ -281,7 +352,131 @@ func get_service_snapshot() -> Dictionary:
         "dynamics_step_count": dynamics_step_count,
         "coordinator_tick_count": coordinator_tick_count,
         "last_control_result": last_control_result.duplicate(true),
-        "last_step_result": last_step_result.duplicate(true)
+        "last_step_result": last_step_result.duplicate(true),
+        "obstacle_hold": bool(last_control_result.get("obstacle_hold", false)),
+        "obstacle_distance_m": last_control_result.get("obstacle_distance_m", INF),
+        "obstacle_stop_distance_m": last_control_result.get("obstacle_stop_distance_m", INF),
+        "lane_change_active": lane_change_active,
+        "lane_change_wait_elapsed_s": lane_change_wait_elapsed_s,
+        "lane_change_status": "CHANGING LANE" if lane_change_active else "",
+        "no_way_hold_active": no_way_hold_active
+    }
+
+func place_obstacle(
+    distance_along_route_m: float,
+    length_m: float = 4.0,
+    route_id: String = "",
+    segment_id: String = "",
+    width_m: float = 1.8
+) -> Dictionary:
+    if not is_finite(distance_along_route_m) || not is_finite(length_m) || length_m < 0.0:
+        return _failure("invalid_obstacle_data")
+    var obstacle_position: Vector2 = navigator.get_point_at_distance(distance_along_route_m)
+    var before_position: Vector2 = navigator.get_point_at_distance(
+        maxf(distance_along_route_m - 0.1, 0.0)
+    )
+    var after_position: Vector2 = navigator.get_point_at_distance(
+        minf(distance_along_route_m + 0.1, navigator.total_length_m)
+    )
+    var obstacle_heading_rad: float = 0.0
+    if after_position != before_position:
+        var obstacle_tangent: Vector2 = (after_position - before_position).normalized()
+        obstacle_heading_rad = atan2(obstacle_tangent.x, obstacle_tangent.y)
+    active_obstacle = RouteObstacle.new(
+        distance_along_route_m,
+        length_m,
+        route_id,
+        segment_id,
+        obstacle_position,
+        width_m,
+        obstacle_heading_rad
+    )
+    return {"valid": true, "failure_reason": ""}
+
+func clear_obstacle() -> Dictionary:
+    if active_obstacle != null:
+        active_obstacle.active = false
+    active_obstacle = null
+    if not lane_change_active:
+        lane_change_wait_elapsed_s = 0.0
+        no_way_hold_active = false
+    return {"valid": true, "failure_reason": ""}
+
+## Replaces the active route without changing the coordinator's physical state.
+## The replacement route must begin at the current pose and match its heading.
+func replace_active_route(
+    centerline_points: Array[Vector2],
+    samples_per_segment: int = ROUTE_SAMPLES_PER_SEGMENT,
+    route_id: String = "",
+    segment_ids: PackedStringArray = PackedStringArray()
+) -> Dictionary:
+    if not initialized:
+        return _failure("service_not_initialized")
+    if not _is_moving_state(journey.state):
+        return _failure("route_swap_not_allowed_in_current_state")
+    if centerline_points.size() < 2:
+        return _failure("route_swap_centerline_invalid")
+    if samples_per_segment < 1:
+        return _failure("route_swap_samples_invalid")
+
+    var current_position := Vector2(dynamics.position_x_m, dynamics.position_z_m)
+    var current_heading: float = dynamics.heading_rad
+    var current_speed: float = dynamics.speed_mps
+    if not current_position.is_finite() || not is_finite(current_heading) \
+        || not is_finite(current_speed) || current_speed < 0.0:
+        return _failure("route_swap_invalid_vehicle_state")
+    if centerline_points[0].distance_to(current_position) > ROUTE_SWAP_POSE_TOLERANCE_M:
+        return _failure("route_swap_start_pose_incompatible")
+    var first_edge: Vector2 = centerline_points[1] - centerline_points[0]
+    if first_edge.length_squared() <= 0.000001:
+        return _failure("route_swap_start_tangent_invalid")
+    var expected_heading: float = atan2(first_edge.x, first_edge.y)
+    var heading_error: float = absf(wrapf(
+        current_heading - expected_heading,
+        -PI,
+        PI
+    ))
+    if heading_error > ROUTE_SWAP_HEADING_TOLERANCE_RAD:
+        return _failure("route_swap_start_heading_incompatible")
+
+    var candidate_navigator := RouteNavigator.new()
+    if not candidate_navigator.set_route(centerline_points, samples_per_segment):
+        return _failure("route_swap_route_invalid")
+    var projected_obstacle_distance: float = -1.0
+    if active_obstacle != null && active_obstacle.active:
+        var obstacle_projection: Dictionary = candidate_navigator.find_nearest_point(
+            active_obstacle.world_position_xz,
+            true
+        )
+        if not obstacle_projection.get("valid", false):
+            return _failure("route_swap_obstacle_projection_failed")
+        projected_obstacle_distance = float(obstacle_projection.progress_m)
+
+    var pose_before := current_position
+    var heading_before: float = current_heading
+    var speed_before: float = current_speed
+    if not navigator.set_route(centerline_points, samples_per_segment):
+        return _failure("route_swap_installation_failed")
+    controller.reset()
+    var pose_after := Vector2(dynamics.position_x_m, dynamics.position_z_m)
+    var heading_after: float = dynamics.heading_rad
+    var speed_after: float = dynamics.speed_mps
+    if pose_before.distance_to(pose_after) > ROUTE_SWAP_POSE_TOLERANCE_M \
+        || absf(wrapf(heading_before - heading_after, -PI, PI)) > 0.000001 \
+        || absf(speed_before - speed_after) > 0.0001:
+        return _failure("route_swap_changed_vehicle_state")
+    if active_obstacle != null && active_obstacle.active:
+        active_obstacle.distance_along_route_m = projected_obstacle_distance
+        active_obstacle.route_id = route_id
+        active_obstacle.segment_id = str(segment_ids)
+    return {
+        "valid": true,
+        "failure_reason": "",
+        "state": journey.state,
+        "route_id": route_id,
+        "segment_ids": segment_ids.duplicate(),
+        "obstacle_reprojected": projected_obstacle_distance >= 0.0,
+        "obstacle_distance_along_route_m": projected_obstacle_distance
     }
 
 func _install_active_leg() -> Dictionary:
@@ -344,6 +539,9 @@ func _install_active_leg() -> Dictionary:
         current_leg = ""
         current_destination_station_id = ""
         arrival_status = "ARRIVED"
+        lane_change_active = false
+        lane_change_wait_elapsed_s = 0.0
+        no_way_hold_active = false
         last_failure_reason = ""
         return installation_request
 

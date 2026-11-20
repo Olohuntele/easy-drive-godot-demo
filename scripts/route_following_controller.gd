@@ -8,6 +8,10 @@ const DEFAULT_MAX_LOCALIZATION_ERROR_M: float = 2.5
 const DEFAULT_ENDPOINT_TOLERANCE_M: float = 1.0
 const DEFAULT_ENDPOINT_MAX_SPEED_MPS: float = 0.1
 const DEFAULT_BRAKING_MARGIN_M: float = 0.25
+## Maximum route distance at which an active obstacle creates a temporary hold.
+const DETECTION_RANGE_M: float = 30.0
+## Required route gap between the shuttle and the obstacle's leading edge.
+const STOP_GAP_M: float = 11.0
 
 var navigation_speed_mps: float = DEFAULT_NAVIGATION_SPEED_MPS
 var lookahead_distance_m: float = DEFAULT_LOOKAHEAD_DISTANCE_M
@@ -26,7 +30,8 @@ func update(
     vehicle_dynamics: RefCounted,
     route_navigator: RefCounted,
     delta: float,
-    manual_intervention: bool = false
+    manual_intervention: bool = false,
+    obstacle: RefCounted = null
 ) -> Dictionary:
     if manual_intervention:
         manual_intervention_seen = true
@@ -55,6 +60,23 @@ func update(
 
     var progress_m: float = navigation.progress_m
     var remaining_distance_m: float = maxf(route_navigator.total_length_m - progress_m, 0.0)
+    var obstacle_info: Dictionary = _get_obstacle_hold(
+        obstacle,
+        progress_m,
+        route_navigator.total_length_m
+    )
+    var obstacle_hold: bool = bool(obstacle_info.get("hold", false))
+    var obstacle_stop_distance_m: float = float(
+        obstacle_info.get("stop_distance_m", INF)
+    )
+    var obstacle_remaining_distance_m: float = float(
+        obstacle_info.get("remaining_distance_m", INF)
+    )
+    var effective_stop_distance_m: float = minf(
+        route_navigator.total_length_m,
+        obstacle_stop_distance_m
+    )
+    var effective_remaining_distance_m: float = maxf(effective_stop_distance_m - progress_m, 0.0)
     var endpoint_xz: Vector2 = route_navigator.get_point_at_distance(route_navigator.total_length_m)
     var endpoint_error_m: float = position_xz.distance_to(endpoint_xz)
     if not is_finite(endpoint_error_m):
@@ -71,7 +93,8 @@ func update(
     if remaining_distance_m <= 0.0001 && endpoint_error_m > endpoint_tolerance_m:
         return _route_result(
             -dynamics_braking, 0.0, "MISSED DESTINATION", "endpoint_overshot",
-            navigation, null, remaining_distance_m, endpoint_error_m, 0.0, false
+            navigation, null, remaining_distance_m, endpoint_error_m, 0.0, false,
+            "ok", 0.0, obstacle_info
         )
 
     if endpoint_error_m <= endpoint_tolerance_m \
@@ -84,7 +107,7 @@ func update(
         return _route_result(
             completion_acceleration_mps2, 0.0, completion_status, completion_reason,
             navigation, null, remaining_distance_m, endpoint_error_m, 0.0,
-            not manual_intervention_seen
+            not manual_intervention_seen, "ok", 0.0, obstacle_info
         )
 
     var lookahead: Dictionary = route_navigator.get_lookahead_point(lookahead_distance_m)
@@ -114,14 +137,18 @@ func update(
 
     var braking_distance_m: float = vehicle_dynamics.speed_mps * vehicle_dynamics.speed_mps \
         / (2.0 * dynamics_braking)
-    var should_brake: bool = remaining_distance_m <= braking_distance_m + braking_margin_m
+    var should_brake: bool = effective_remaining_distance_m <= braking_distance_m \
+        + braking_margin_m
     var requested_acceleration_mps2: float
     var desired_speed_mps: float
     if should_brake:
         requested_acceleration_mps2 = -dynamics_braking
         desired_speed_mps = 0.0
     else:
-        desired_speed_mps = minf(navigation_speed_mps, dynamics_speed_limit)
+        desired_speed_mps = 0.0 if obstacle_hold else minf(
+            navigation_speed_mps,
+            dynamics_speed_limit
+        )
         if vehicle_dynamics.speed_mps < desired_speed_mps:
             requested_acceleration_mps2 = minf(
                 dynamics_acceleration,
@@ -147,8 +174,40 @@ func update(
         desired_speed_mps,
         false,
         steering_status,
-        braking_distance_m
+        braking_distance_m,
+        obstacle_info
     )
+
+func _get_obstacle_hold(
+    obstacle: RefCounted,
+    progress_m: float,
+    route_length_m: float
+) -> Dictionary:
+    var result := {
+        "hold": false,
+        "obstacle_distance_m": INF,
+        "obstacle_remaining_distance_m": INF,
+        "stop_distance_m": INF,
+        "obstacle_length_m": 0.0
+    }
+    if obstacle == null || not obstacle.active:
+        return result
+    if not is_finite(obstacle.distance_along_route_m) \
+        || not is_finite(obstacle.length_m) \
+        || obstacle.length_m < 0.0:
+        return result
+    var obstacle_remaining_m: float = obstacle.distance_along_route_m - progress_m
+    if obstacle_remaining_m < 0.0 || obstacle_remaining_m > DETECTION_RANGE_M:
+        return result
+    var stop_distance_m: float = obstacle.distance_along_route_m - STOP_GAP_M
+    if stop_distance_m < 0.0 || stop_distance_m > route_length_m:
+        return result
+    result.hold = true
+    result.obstacle_distance_m = obstacle.distance_along_route_m
+    result.obstacle_remaining_distance_m = obstacle_remaining_m
+    result.stop_distance_m = stop_distance_m
+    result.obstacle_length_m = obstacle.length_m
+    return result
 
 func _configuration_is_valid() -> bool:
     return is_finite(navigation_speed_mps) && navigation_speed_mps > 0.0 \
@@ -214,12 +273,13 @@ func _route_result(
     desired_speed_mps: float,
     arrival_certified: bool,
     steering_status: String = "ok",
-    braking_distance_m: float = 0.0
+    braking_distance_m: float = 0.0,
+    obstacle_info: Dictionary = {}
 ) -> Dictionary:
     var lookahead_position: Vector2 = Vector2.ZERO
     if lookahead is Dictionary:
         lookahead_position = lookahead.get("position_xz", Vector2.ZERO)
-    return {
+    var result := {
         "requested_acceleration_mps2": acceleration_mps2,
         "requested_steering_rad": steering_rad,
         "status": status_text,
@@ -239,3 +299,15 @@ func _route_result(
         "arrival_certified": arrival_certified,
         "steering_status": steering_status
     }
+    result["obstacle_hold"] = bool(obstacle_info.get("hold", false))
+    result["obstacle_distance_m"] = obstacle_info.get("obstacle_distance_m", INF)
+    result["obstacle_remaining_distance_m"] = obstacle_info.get(
+        "obstacle_remaining_distance_m",
+        INF
+    )
+    result["obstacle_stop_distance_m"] = obstacle_info.get("stop_distance_m", INF)
+    result["obstacle_length_m"] = obstacle_info.get("obstacle_length_m", 0.0)
+    if result.obstacle_hold && result.status == "EN ROUTE":
+        result.status = "OBSTACLE AHEAD - HOLDING"
+        result.reason = "braking_for_obstacle" if result.braking else "holding_for_obstacle"
+    return result

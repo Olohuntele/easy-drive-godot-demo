@@ -6,12 +6,14 @@ const RouteNavigator = preload("res://scripts/route_navigator.gd")
 const RouteFollowingController = preload("res://scripts/route_following_controller.gd")
 const CampusServiceCoordinator = preload("res://scripts/campus_service_coordinator.gd")
 const CampusRouteMap = preload("res://scripts/campus_route_map.gd")
+const PassengerBookingPanel = preload("res://scripts/passenger_booking_panel.gd")
+const RoadDimensions = preload("res://scripts/road_dimensions.gd")
 
 const ROUTE_LEFT: String = "LEFT"
 const ROUTE_RIGHT: String = "RIGHT"
 const ROUTE_S_CURVE: String = "S-CURVE"
-const ROUTE_ROAD_HALF_WIDTH_M: float = 4.0
-const ROUTE_BOUNDARY_OFFSET_M: float = 3.82
+const ROUTE_ROAD_WIDTH_M: float = RoadDimensions.ROAD_WIDTH_M
+const ROUTE_BOUNDARY_OFFSET_M: float = ROUTE_ROAD_WIDTH_M * 0.5 - 0.18
 const ROUTE_BOUNDARY_WIDTH_M: float = 0.16
 const ROUTE_CENTERLINE_WIDTH_M: float = 0.12
 const MODE4_CAMERA_POSITION_RESPONSE: float = 8.0
@@ -73,6 +75,7 @@ var service_coordinator: RefCounted
 var service_road_root: Node3D
 var service_active_route: MeshInstance3D
 var service_route_map: Control
+var booking_panel
 var service_visual_leg: String = ""
 var service_mode_message: String = ""
 
@@ -244,6 +247,8 @@ func select_passenger_service_mode() -> Dictionary:
     autonomous_route_mode = false
     service_mode_message = ""
     var visuals_ready: bool = _ensure_service_visuals(service_coordinator.network)
+    if booking_panel:
+        booking_panel.visible = true
     if straight_road:
         straight_road.visible = false
     if straight_centerline:
@@ -278,19 +283,28 @@ func select_passenger_service_mode() -> Dictionary:
     return {"valid": true, "failure_reason": ""}
 
 func request_service_demo_booking() -> Dictionary:
+    return request_passenger_booking("sports_hall", "innovation_centre")
+
+func request_passenger_booking(
+    pickup_station_id: String,
+    destination_station_id: String
+) -> Dictionary:
     if not passenger_service_mode || service_coordinator == null:
         return {"valid": false, "failure_reason": "passenger_service_mode_not_active"}
     var result: Dictionary = service_coordinator.request_booking(
-        "sports_hall",
-        "innovation_centre"
+        pickup_station_id,
+        destination_station_id
     )
     service_mode_message = (
-        "Booking accepted: Sports Hall to Innovation Centre."
+        "Booking accepted."
         if result.get("valid", false)
         else "Booking rejected: %s" % _humanize_failure(str(result.get("failure_reason", "")))
     )
-    _sync_passenger_service_visuals(service_coordinator.get_service_snapshot())
-    _update_passenger_service_hud(service_coordinator.get_service_snapshot())
+    var snapshot: Dictionary = service_coordinator.get_service_snapshot()
+    _sync_passenger_service_visuals(snapshot)
+    _update_passenger_service_hud(snapshot)
+    if booking_panel:
+        booking_panel.show_booking_result(result, snapshot)
     return result
 
 func confirm_service_demo_boarding() -> Dictionary:
@@ -304,8 +318,11 @@ func confirm_service_demo_boarding() -> Dictionary:
             str(result.get("failure_reason", ""))
         )
     )
-    _sync_passenger_service_visuals(service_coordinator.get_service_snapshot())
-    _update_passenger_service_hud(service_coordinator.get_service_snapshot())
+    var snapshot: Dictionary = service_coordinator.get_service_snapshot()
+    _sync_passenger_service_visuals(snapshot)
+    _update_passenger_service_hud(snapshot)
+    if booking_panel:
+        booking_panel.show_action_result("boarding", result, snapshot)
     return result
 
 func confirm_service_demo_exit() -> Dictionary:
@@ -319,8 +336,11 @@ func confirm_service_demo_exit() -> Dictionary:
             str(result.get("failure_reason", ""))
         )
     )
-    _sync_passenger_service_visuals(service_coordinator.get_service_snapshot())
-    _update_passenger_service_hud(service_coordinator.get_service_snapshot())
+    var snapshot: Dictionary = service_coordinator.get_service_snapshot()
+    _sync_passenger_service_visuals(snapshot)
+    _update_passenger_service_hud(snapshot)
+    if booking_panel:
+        booking_panel.show_action_result("exit", result, snapshot)
     return result
 
 func restart_service_demo() -> Dictionary:
@@ -378,12 +398,16 @@ func _can_leave_passenger_service() -> bool:
 func _leave_passenger_service_mode() -> void:
     if not passenger_service_mode:
         return
+    if booking_panel && booking_panel.has_keyboard_focus():
+        get_viewport().gui_release_focus()
     passenger_service_mode = false
     service_mode_message = ""
     if service_road_root:
         service_road_root.visible = false
     if service_route_map:
         service_route_map.visible = false
+    if booking_panel:
+        booking_panel.visible = false
 
 func _update_legacy_hud_message() -> void:
     if not hud_label || service_mode_message.is_empty():
@@ -392,6 +416,10 @@ func _update_legacy_hud_message() -> void:
         hud_label.text += "\n" + service_mode_message
 
 func _physics_process_passenger_service(delta: float) -> void:
+    if booking_panel && booking_panel.visible && booking_panel.has_keyboard_focus():
+        _advance_passenger_service(delta)
+        return
+
     var key1_current: bool = Input.is_key_pressed(KEY_1)
     if key1_current && not service_key1_pressed_last_frame:
         if _can_leave_passenger_service():
@@ -522,6 +550,15 @@ func _ensure_service_visuals(network: RefCounted) -> bool:
         service_route_map.name = "CampusRouteMap"
         canvas_layer.add_child(service_route_map)
     service_route_map.configure(network)
+    if booking_panel == null:
+        booking_panel = PassengerBookingPanel.new()
+        booking_panel.name = "PassengerBookingPanel"
+        canvas_layer.add_child(booking_panel)
+        booking_panel.configure(network, service_coordinator.get_service_snapshot())
+        booking_panel.booking_requested.connect(_on_passenger_booking_requested)
+        booking_panel.boarding_requested.connect(_on_passenger_boarding_requested)
+        booking_panel.passenger_exit_requested.connect(_on_passenger_exit_requested)
+    booking_panel.visible = false
     var road_count: int = 0
     var station_label_count: int = 0
     for child in service_road_root.get_children():
@@ -581,6 +618,8 @@ func _sync_passenger_service_visuals(snapshot: Dictionary, delta: float = 0.0) -
 func _update_passenger_service_hud(snapshot: Dictionary) -> void:
     if not hud_label:
         return
+    if booking_panel:
+        booking_panel.update_service_snapshot(snapshot)
     var booking: Dictionary = snapshot.get("active_booking", {})
     var pickup_name: String = "—"
     var destination_name: String = "—"
@@ -605,9 +644,9 @@ func _update_passenger_service_hud(snapshot: Dictionary) -> void:
     var state_label: String = _humanize_service_state(journey_state)
     var waiting_text: String = ""
     if journey_state == "BOARDING":
-        waiting_text = "Waiting for boarding confirmation at Sports Hall."
+        waiting_text = "Waiting for boarding confirmation at %s." % pickup_name
     elif journey_state == "DROPOFF":
-        waiting_text = "Waiting for passenger exit confirmation at Innovation Centre."
+        waiting_text = "Waiting for passenger exit confirmation at %s." % destination_name
     elif journey_state == "BLOCKED":
         waiting_text = "Journey blocked: %s" % _humanize_failure(
             str(snapshot.get("blocked_reason", ""))
@@ -615,9 +654,9 @@ func _update_passenger_service_hud(snapshot: Dictionary) -> void:
 
     var arrival_text: String = "No station arrival certified."
     if journey_state == "BOARDING":
-        arrival_text = "Sports Hall arrival certified."
+        arrival_text = "%s arrival certified." % pickup_name
     elif journey_state == "DROPOFF":
-        arrival_text = "Innovation Centre arrival certified."
+        arrival_text = "%s arrival certified." % destination_name
     elif journey_state == "IDLE" && snapshot.get("arrival_certified", false):
         arrival_text = "Return to North Gate certified."
 
@@ -638,7 +677,7 @@ func _update_passenger_service_hud(snapshot: Dictionary) -> void:
         + "%s\n" % arrival_text
         + "%s\n" % waiting_text
         + "Legacy demo is suspended; only the service shuttle advances.\n"
-        + "Controls: [B] Request demo | [E] Board | [X] Passenger exit\n"
+        + "Controls: [B] Request demo | Panel Board/Exit or [E]/[X]\n"
         + "[R] Restart only when available | [1–4] Leave after return | [WASD] disabled"
     )
     if not service_mode_message.is_empty():
@@ -741,7 +780,12 @@ func _update_route_visuals(centerline_samples: PackedVector2Array) -> void:
         centerline_instance.material_override = _route_material(Color(1.0, 0.78, 0.16, 1.0))
         route_visual_root.add_child(centerline_instance)
 
-    route_surface_mesh = _make_route_strip_mesh(centerline_samples, 0.0, ROUTE_ROAD_HALF_WIDTH_M * 2.0, 0.055)
+    route_surface_mesh = _make_route_strip_mesh(
+        centerline_samples,
+        0.0,
+        ROUTE_ROAD_WIDTH_M,
+        0.055
+    )
     route_left_boundary_mesh = _make_route_strip_mesh(
         centerline_samples,
         -ROUTE_BOUNDARY_OFFSET_M,
@@ -825,6 +869,12 @@ func key4_press_edge(is_pressed: bool) -> bool:
     return just_pressed
 
 func _input(event: InputEvent) -> void:
+    if event is InputEventKey && event.pressed && not event.echo \
+        && event.keycode == KEY_ESCAPE \
+        && booking_panel && booking_panel.visible && booking_panel.has_keyboard_focus():
+        get_viewport().gui_release_focus()
+        get_viewport().set_input_as_handled()
+        return
     if not event is InputEventKey || not event.pressed || event.echo:
         return
     var key_event: InputEventKey = event
@@ -846,6 +896,18 @@ func _input(event: InputEvent) -> void:
         print("[MODE5 DIAG] Key 8 ignored: Mode 5 is already active.")
         return
     select_passenger_service_mode()
+
+func _on_passenger_booking_requested(
+    pickup_station_id: String,
+    destination_station_id: String
+) -> void:
+    request_passenger_booking(pickup_station_id, destination_station_id)
+
+func _on_passenger_boarding_requested() -> void:
+    confirm_service_demo_boarding()
+
+func _on_passenger_exit_requested() -> void:
+    confirm_service_demo_exit()
 
 func _physics_process(delta: float) -> void:
     # --- 1. Keyboard Controls & Mode Selection ---

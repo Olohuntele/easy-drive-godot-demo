@@ -273,6 +273,9 @@ func confirm_passenger_boarding() -> Dictionary:
     _boarding_confirmed = true
     return {"valid": true, "failure_reason": "", "state": state}
 
+func is_boarding_confirmed() -> bool:
+    return _boarding_confirmed
+
 func confirm_passenger_exit() -> Dictionary:
     if state != DROPOFF:
         return _failure("passenger_exit_confirmation_wrong_state")
